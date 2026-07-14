@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target
+
+# Node / frontend deps
+node_modules
+
+# Secrets — never commit
+.envrc
+.env
+*.key
+*.pem
+secrets*
+
+# Local runtime data (also lives outside the repo in ~/.brave_vault)
+*.vault.json
+
+# Tauri generated schemas/bindings
+crates/app/src-tauri/gen/
+
+# Local test helper that sources .envrc
+test.sh
