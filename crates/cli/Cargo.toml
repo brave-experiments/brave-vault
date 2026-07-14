@@ -1,0 +1,12 @@
+[package]
+name = "brave_vault_cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "brave_vault_cli"
+path = "src/main.rs"
+
+[dependencies]
+brave_vault_core = { path = "../core" }
+anyhow = "1"
