@@ -1,0 +1,333 @@
+// Minimal subset of Chromium/Brave sync protocol, transcribed from
+// ~/projects/brave/brave-browser/src/components/sync/protocol/*.proto
+// Field tags copied verbatim. Read-only GetUpdates path only.
+syntax = "proto2";
+
+package sync_pb;
+
+// ---- encryption.proto ----
+message EncryptedData {
+  optional string key_name = 1;
+  optional string blob = 2; // base64-encoded
+}
+
+// ---- password_specifics.proto ----
+message PasswordSpecificsData {
+  message Notes {
+    message Note {
+      optional string unique_display_name = 1;
+      optional string value = 2;
+      optional int64 date_created_windows_epoch_micros = 3;
+      optional bool hide_by_default = 4;
+    }
+    repeated Note note = 1;
+  }
+
+  // ALL fields are listed so decode->modify->re-encode is lossless: prost
+  // drops fields it doesn't know about, which would silently destroy data
+  // other Brave features depend on when we commit an edited entity.
+  optional int32 scheme = 1;
+  optional string signon_realm = 2;
+  optional string origin = 3;
+  optional string action = 4;
+  optional string username_element = 5;
+  optional string username_value = 6;
+  optional string password_element = 7;
+  optional string password_value = 8;
+  optional bool ssl_valid = 9 [deprecated = true];
+  optional bool preferred = 10 [deprecated = true];
+  optional int64 date_created = 11;
+  optional bool blacklisted = 12;
+  optional int32 type = 13;
+  optional int32 times_used = 14;
+  optional string display_name = 15;
+  optional string avatar_url = 16;
+  optional string federation_url = 17;
+  optional int64 date_last_used = 18;
+  optional PasswordIssues password_issues = 19;
+  optional int64 date_password_modified_windows_epoch_micros = 20;
+  optional Notes notes = 22;
+  optional string sender_email = 23;
+  optional string sender_name = 24;
+  optional int64 date_received_windows_epoch_micros = 25;
+  optional bool sharing_notification_displayed = 26;
+  optional string sender_profile_image_url = 27;
+  optional int64 date_last_filled_windows_epoch_micros = 28;
+  optional bool actor_login_approved = 29;
+}
+
+message PasswordIssues {
+  message PasswordIssue {
+    optional uint64 date_first_detection_windows_epoch_micros = 1;
+    optional bool is_muted = 2;
+    optional bool trigger_notification_from_backend_on_detection = 3;
+  }
+  optional PasswordIssue leaked_password_issue = 1;
+  optional PasswordIssue reused_password_issue = 2;
+  optional PasswordIssue weak_password_issue = 3;
+  optional PasswordIssue phished_password_issue = 4;
+}
+
+message PasswordSpecificsMetadata {
+  optional string url = 1;
+  optional bool blacklisted = 2;
+  optional int64 date_last_used_windows_epoch_micros = 3;
+  optional int32 type = 13;
+}
+
+message PasswordSpecifics {
+  optional EncryptedData encrypted = 1;
+  optional PasswordSpecificsData client_only_encrypted_data = 2;
+  optional PasswordSpecificsMetadata unencrypted_metadata = 3;
+  optional EncryptedData encrypted_notes_backup = 5;
+}
+
+// ---- bookmark_specifics.proto (subset) ----
+message UniquePosition {
+  optional bytes value = 1;
+  optional bytes compressed_value = 2;
+  optional uint64 uncompressed_length = 3;
+  optional bytes custom_compressed_v1 = 4;
+}
+
+message BookmarkMetaInfo {
+  optional string key = 1;
+  optional string value = 2;
+}
+
+message BookmarkSpecifics {
+  optional string url = 1;
+  optional bytes favicon = 2;
+  optional string legacy_canonicalized_title = 3;
+  optional int64 creation_time_us = 4;
+  optional string icon_url = 5;
+  repeated BookmarkMetaInfo meta_info = 6;
+  optional string guid = 10;
+  optional string full_title = 11;
+  optional string parent_guid = 14;
+  enum Type {
+    UNSPECIFIED = 0;
+    URL = 1;
+    FOLDER = 2;
+  }
+  optional Type type = 15;
+  optional UniquePosition unique_position = 16;
+  optional int64 last_used_time_us = 17;
+}
+
+// ---- autofill_specifics.proto (AutofillProfile = identities/addresses) ----
+message AutofillProfileSpecifics {
+  optional string guid = 15;
+  optional string profile_label = 62;
+  repeated string name_full = 21;
+  repeated string email_address = 5;
+  optional string company_name = 6;
+  repeated string phone_home_whole_number = 13;
+  optional string address_home_street_address = 17;
+  optional string address_home_line1 = 7;
+  optional string address_home_line2 = 8;
+  optional string address_home_city = 9;
+  optional string address_home_state = 10;
+  optional string address_home_zip = 11;
+  optional string address_home_country = 12;
+}
+
+// ---- reading_list_specifics.proto (subset) ----
+message ReadingListSpecifics {
+  optional string entry_id = 1;
+  optional string title = 2;
+  optional string url = 3;
+  optional int64 creation_time_us = 4;
+  optional int64 update_time_us = 5;
+  optional int32 status = 6; // UNREAD=0, READ=1, UNSEEN=2
+}
+
+// ---- saved_tab_group_specifics.proto (subset) ----
+message SavedTabGroup {
+  optional int64 position = 1;
+  optional string title = 2;
+  optional int32 color = 3;
+}
+message SavedTabGroupTab {
+  optional string group_guid = 1;
+  optional int64 position = 2;
+  optional string url = 3;
+  optional string title = 4;
+}
+message SavedTabGroupSpecifics {
+  optional string guid = 1;
+  optional int64 creation_time_windows_epoch_micros = 2;
+  optional int64 update_time_windows_epoch_micros = 3;
+  optional SavedTabGroup group = 4;
+  optional SavedTabGroupTab tab = 5;
+}
+
+// ---- tab_navigation.proto (subset) ----
+message TabNavigation {
+  optional string virtual_url = 2;
+  optional string title = 4;
+}
+
+// ---- session_specifics.proto (subset for open tabs) ----
+message SessionTab {
+  optional int32 tab_id = 1;
+  optional int32 window_id = 2;
+  optional int32 current_navigation_index = 4;
+  repeated TabNavigation navigation = 7;
+}
+message SessionWindow {
+  optional int32 window_id = 1;
+  repeated int32 tab = 4;
+}
+message SessionHeader {
+  repeated SessionWindow window = 2;
+  optional string client_name = 3;
+}
+message SessionSpecifics {
+  optional string session_tag = 1;
+  optional SessionHeader header = 2;
+  optional SessionTab tab = 3;
+  optional int32 tab_node_id = 4 [default = -1];
+}
+
+// ---- device_info_specifics.proto (subset; this type is never encrypted) ----
+message DeviceInfoSpecifics {
+  optional string cache_guid = 1;
+  optional string client_name = 2;
+  optional int32 device_type = 3;
+  optional string sync_user_agent = 4;
+  optional int64 last_updated_timestamp = 8;
+  optional string model = 11;
+  optional string manufacturer = 12;
+  optional int32 os_type = 19;
+  optional int32 device_form_factor = 20;
+}
+
+// ---- entity_specifics.proto (all supported types) ----
+message EntitySpecifics {
+  optional EncryptedData encrypted = 1;
+  optional SessionSpecifics session = 50119;
+  optional BookmarkSpecifics bookmark = 32904;
+  optional PasswordSpecifics password = 45873;
+  optional NigoriSpecifics nigori = 47745;
+  optional AutofillProfileSpecifics autofill_profile = 63951;
+  optional ReadingListSpecifics reading_list = 411028;
+  optional SavedTabGroupSpecifics saved_tab_group = 1004874;
+  optional DeviceInfoSpecifics device_info = 154522;
+}
+
+// ---- nigori_specifics.proto (subset needed for keystore decryption) ----
+message NigoriSpecifics {
+  optional EncryptedData encryption_keybag = 1;
+  optional bool keybag_is_frozen = 2;
+  optional int32 passphrase_type = 30 [default = 1];
+  optional EncryptedData keystore_decryptor_token = 31;
+  optional int64 keystore_migration_time = 32;
+  optional int32 custom_passphrase_key_derivation_method = 45 [default = 0];
+  optional string custom_passphrase_key_derivation_salt = 46;
+}
+
+// ---- sync_entity.proto ----
+message SyncEntity {
+  optional string id_string = 1;
+  optional string parent_id_string = 2;
+  optional int64 version = 4;
+  optional int64 mtime = 5;
+  optional int64 ctime = 6;
+  optional string name = 7;
+  optional string non_unique_name = 8;
+  optional string server_defined_unique_tag = 10;
+  optional bool deleted = 18;
+  optional string originator_cache_guid = 19;
+  optional string originator_client_item_id = 20;
+  optional EntitySpecifics specifics = 21;
+  optional bool folder = 22;
+  optional string client_tag_hash = 23;
+}
+
+// ---- data_type_progress_marker.proto ----
+message DataTypeProgressMarker {
+  optional int32 data_type_id = 1;
+  optional bytes token = 2;
+}
+
+message DataTypeContext {
+  optional int32 data_type_id = 1;
+  optional string context = 2;
+  optional int64 version = 3;
+}
+
+// ---- sync.proto ----
+message GetUpdatesCallerInfo {
+  enum GetUpdatesSource {
+    UNKNOWN = 0;
+    PERIODIC = 4;
+    NEW_CLIENT = 9;
+  }
+  optional GetUpdatesSource source = 1;
+  optional bool notifications_enabled = 2;
+}
+
+message GetUpdatesMessage {
+  optional GetUpdatesCallerInfo caller_info = 2;
+  optional bool fetch_folders = 3 [default = true];
+  repeated DataTypeProgressMarker from_progress_marker = 6;
+  optional bool streaming = 7 [default = false];
+  optional bool need_encryption_key = 8 [default = false];
+  optional int32 get_updates_origin = 9;
+  optional bool is_retry = 10 [default = false];
+  repeated DataTypeContext client_contexts = 11;
+}
+
+message ChipBag {
+  optional bytes server_chips = 1;
+}
+
+message CommitMessage {
+  repeated SyncEntity entries = 1;
+  optional string cache_guid = 2;
+}
+
+message ClientToServerMessage {
+  required string share = 1;
+  optional int32 protocol_version = 2 [default = 99];
+  enum Contents {
+    COMMIT = 1;
+    GET_UPDATES = 2;
+    CLEAR_SERVER_DATA = 5;
+  }
+  required Contents message_contents = 3;
+  optional CommitMessage commit = 4;
+  optional GetUpdatesMessage get_updates = 5;
+  optional string store_birthday = 7;
+  optional ChipBag bag_of_chips = 11;
+  optional string api_key = 12;
+}
+
+message GetUpdatesResponse {
+  repeated SyncEntity entries = 1;
+  optional int64 changes_remaining = 4;
+  repeated DataTypeProgressMarker new_progress_marker = 5;
+  repeated bytes encryption_keys = 6;
+  repeated DataTypeContext context_mutations = 7;
+}
+
+message ClientToServerResponse {
+  optional GetUpdatesResponse get_updates = 2;
+  optional int32 error_code = 4 [default = 0];
+  optional string error_message = 5;
+  optional string store_birthday = 6;
+  optional ChipBag new_bag_of_chips = 14;
+}
+
+// ---- nigori_specifics.proto (subset for keybag) ----
+message NigoriKey {
+  optional string deprecated_name = 1;
+  optional bytes deprecated_user_key = 2;
+  optional bytes encryption_key = 3;
+  optional bytes mac_key = 4;
+}
+
+message NigoriKeyBag {
+  repeated NigoriKey key = 2;
+}
