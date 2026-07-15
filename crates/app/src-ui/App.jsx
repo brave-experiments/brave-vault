@@ -6,6 +6,7 @@ import Checkbox from "@brave/leo/react/checkbox";
 import Icon from "@brave/leo/react/icon";
 
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 const clipboard = window.__TAURI__.clipboardManager;
 
 // ---------- Tauri helpers ----------
@@ -180,8 +181,6 @@ function Main({ setScreen, showToast }) {
   const [savingId, setSavingId] = useState(null);
   const [purging, setPurging] = useState(false);
   const [purgeMsg, setPurgeMsg] = useState("");
-  const purgeArmed = useRef(false);
-  const purgeArmTimer = useRef(null);
   const reqSeq = useRef(0);
 
   const folder = folderStack.length ? folderStack[folderStack.length - 1].guid : "";
@@ -292,42 +291,41 @@ function Main({ setScreen, showToast }) {
     runInBackground(() => invoke("delete_device", { cacheGuid: item.guid }), { ok: "Device removed", fail: "Remove failed" });
   };
 
+  // Live progress streamed from the backend during a purge (device fetched /
+  // each removal), so the status line mirrors what the logs show.
+  useEffect(() => {
+    let unlisten;
+    listen("purge-progress", (e) => {
+      const p = e.payload || {};
+      if (p.phase === "fetched") {
+        setPurgeMsg(p.stale > 0
+          ? `Found ${p.total} devices — removing ${p.stale} stale…`
+          : `Found ${p.total} devices — none are stale`);
+      } else if (p.phase === "removing") {
+        setPurgeMsg(`Removing ${p.name} (${p.index} of ${p.stale})…`);
+      }
+    }).then((u) => { unlisten = u; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
   const purgeStaleDevices = async () => {
     if (purging) return;
     const days = 30;
-    console.log("[purge] button clicked");
-    // Two-step in-app confirm. window.confirm() is unreliable inside the Tauri
-    // webview (can silently return false), so we arm on the first click and
-    // run on the second — and narrate every step on-screen via purgeMsg so the
-    // action can never look like it did nothing.
-    if (!purgeArmed.current) {
-      purgeArmed.current = true;
-      setPurgeMsg(`Click "Purge stale" again to remove devices not synced in ${days} days`);
-      clearTimeout(purgeArmTimer.current);
-      purgeArmTimer.current = setTimeout(() => {
-        purgeArmed.current = false;
-        setPurgeMsg("");
-      }, 6000);
-      return;
-    }
-    clearTimeout(purgeArmTimer.current);
-    purgeArmed.current = false;
-    console.log("[purge] confirmed, invoking purge_stale_devices");
-    // The purge fetches the device list then commits a tombstone per stale
-    // device — several network round-trips that can take a while.
+    // One click starts it (Cancel button appears while it runs). The backend
+    // streams purge-progress events that drive the status line above.
     setPurging(true);
-    setPurgeMsg("Contacting sync server…");
+    setPurgeMsg("Fetching device list from sync server…");
     try {
-      const n = await invoke("purge_stale_devices", { days });
-      console.log("[purge] done, removed count =", n);
-      const msg = n > 0
-        ? `Removed ${n} stale device${n > 1 ? "s" : ""}`
+      const removed = await invoke("purge_stale_devices", { days });
+      const msg = removed.length > 0
+        ? `Removed ${removed.length} device${removed.length > 1 ? "s" : ""}: ${removed.join(", ")}`
         : "Done — no devices were stale (none older than 30 days)";
       setPurgeMsg(msg);
-      showToast(msg);
+      showToast(removed.length > 0
+        ? `Removed ${removed.length} stale device${removed.length > 1 ? "s" : ""}`
+        : "No stale devices found");
       await refresh();
     } catch (e) {
-      console.error("[purge] failed:", e);
       const msg = "Purge failed: " + e;
       setPurgeMsg(msg);
       showToast(msg);
@@ -335,6 +333,11 @@ function Main({ setScreen, showToast }) {
       setPurging(false);
       setTimeout(() => setPurgeMsg(""), 8000);
     }
+  };
+
+  const cancelPurge = () => {
+    invoke("cancel_purge").catch(() => {});
+    setPurgeMsg("Cancelling…");
   };
 
   const saveItem = async (args, uid) => {
@@ -406,10 +409,14 @@ function Main({ setScreen, showToast }) {
               else setEditing({ mode: "new" });
             }}><Icon name="plus-add" slot="icon-before" />New</Button>
           )}
-          {view === "devices" && (
-            <Button size="small" kind="outline" onClick={purgeStaleDevices}
-              isLoading={purging}>
-              <Icon name="trash" slot="icon-before" />{purging ? "Purging…" : "Purge stale"}
+          {view === "devices" && !purging && (
+            <Button size="small" kind="outline" onClick={purgeStaleDevices}>
+              <Icon name="trash" slot="icon-before" />Purge stale
+            </Button>
+          )}
+          {view === "devices" && purging && (
+            <Button size="small" kind="outline" onClick={cancelPurge}>
+              Cancel purge
             </Button>
           )}
           {view === "devices" && purgeMsg && (

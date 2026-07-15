@@ -1,9 +1,10 @@
 //! Brave Vault — Tauri backend. Bridges the web UI to brave_vault_core.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use brave_vault_core::config::Config;
 use brave_vault_core::crypto::{pwgen, seed, time_words};
@@ -11,7 +12,7 @@ use brave_vault_core::favicon;
 use brave_vault_core::model::{
     password_strength, BookmarkItem, DeviceItem, IdentityItem, LinkItem, PasswordItem,
 };
-use brave_vault_core::session::{self, EditFields, PasswordRecord, Session};
+use brave_vault_core::session::{self, EditFields, PasswordRecord, PurgeProgress, Session};
 use brave_vault_core::vault::{self, VaultData};
 
 const VAULT_PASSWORD: &str = "testing";
@@ -41,6 +42,20 @@ struct AppState {
 }
 
 type SharedState = Arc<Mutex<AppState>>;
+
+/// Cooperative cancel flag for an in-flight stale-device purge. Managed
+/// separately from AppState so `cancel_purge` can flip it while the purge holds
+/// no lock, and so the blocking purge task can poll it via a cheap Arc clone.
+#[derive(Default, Clone)]
+struct PurgeCancel(Arc<AtomicBool>);
+
+/// Progress event streamed to the UI during a stale-device purge.
+#[derive(Clone, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum PurgeEvent {
+    Fetched { total: usize, stale: usize },
+    Removing { name: String, index: usize, stale: usize },
+}
 
 /// Rebuild the cached DTOs from the current passwords/bookmarks. Reads favicon
 /// files from disk once here (not on every list_items call).
@@ -1062,10 +1077,16 @@ async fn delete_device(cache_guid: String, state: State<'_, SharedState>) -> Res
 
 /// Tombstone every non-current device on the chain that hasn't synced in the
 /// last `days` days. Only affects this chain (keyed by our mnemonic). Returns
-/// the number of devices removed. Runs the blocking network work off the UI
-/// thread; drops the purged rows from the cached DTOs on success.
+/// the names of the devices removed. Runs the blocking network work off the UI
+/// thread, streaming `purge-progress` events as it goes and honoring a cancel
+/// request; drops the purged rows from the cached DTOs on success.
 #[tauri::command]
-async fn purge_stale_devices(days: i64, state: State<'_, SharedState>) -> Result<usize, String> {
+async fn purge_stale_devices(
+    app: AppHandle,
+    days: i64,
+    state: State<'_, SharedState>,
+    cancel_state: State<'_, PurgeCancel>,
+) -> Result<Vec<String>, String> {
     let (cfg, mnemonic) = creds(&state)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1074,19 +1095,36 @@ async fn purge_stale_devices(days: i64, state: State<'_, SharedState>) -> Result
     let cutoff = now - days.max(0) * 86400;
     eprintln!("[purge] command invoked: days={days}, cutoff_unix={cutoff}");
     let shared = state.inner().clone();
+    let cancel = cancel_state.0.clone();
+    cancel.store(false, Ordering::Relaxed);
     let removed = tauri::async_runtime::spawn_blocking(move || {
-        Session::new(cfg, mnemonic).commit_delete_stale_devices(cutoff)
+        Session::new(cfg, mnemonic).commit_delete_stale_devices(cutoff, &cancel, |p| {
+            let ev = match p {
+                PurgeProgress::Fetched { total, stale } => PurgeEvent::Fetched { total, stale },
+                PurgeProgress::Removing { name, index, stale } => {
+                    PurgeEvent::Removing { name, index, stale }
+                }
+            };
+            let _ = app.emit("purge-progress", ev);
+        })
     })
     .await
     .map_err(|e| e.to_string())??;
-    eprintln!("[purge] commit_delete_stale_devices returned {} device(s): {:?}", removed.len(), removed);
+    eprintln!("[purge] returned {} device(s): {:?}", removed.len(), removed);
     if !removed.is_empty() {
         let mut st = shared.lock().unwrap();
         let gone: std::collections::HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
         st.devices.retain(|d| d.is_current || !gone.contains(d.name.as_str()));
         st.dev_dtos.retain(|d| d.current || !gone.contains(d.title.as_str()));
     }
-    Ok(removed.len())
+    Ok(removed)
+}
+
+/// Request cancellation of an in-flight purge. The purge stops before the next
+/// device and returns whatever it removed so far.
+#[tauri::command]
+fn cancel_purge(cancel_state: State<'_, PurgeCancel>) {
+    cancel_state.0.store(true, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -1228,6 +1266,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(SharedState::default())
+        .manage(PurgeCancel::default())
         .invoke_handler(tauri::generate_handler![
             has_config,
             has_chain,
@@ -1246,6 +1285,7 @@ pub fn run() {
             delete_item,
             delete_device,
             purge_stale_devices,
+            cancel_purge,
             replay_outbox,
             fetch_favicons,
             lock,

@@ -1,6 +1,8 @@
 //! High-level session API: the unlock -> sync -> decrypt -> commit pipeline,
 //! shared by any UI (CLI, Tauri desktop, mobile).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use prost::Message;
 
 use crate::config::Config;
@@ -10,6 +12,21 @@ use crate::crypto::{keybag, seed};
 use crate::model::{BookmarkItem, DeviceItem, IdentityItem, PasswordItem};
 use crate::sync::client::SyncClient;
 use crate::sync::{commit, proto};
+
+/// Progress reported while purging stale devices, so a UI can show live status
+/// (how many devices were found, and which one is being removed) instead of an
+/// opaque wait.
+#[derive(Clone, Debug)]
+pub enum PurgeProgress {
+    /// Device list fetched: `total` entries on the chain, `stale` to be removed.
+    Fetched { total: usize, stale: usize },
+    /// About to tombstone `name` — the `index`-th of `stale` stale devices.
+    Removing {
+        name: String,
+        index: usize,
+        stale: usize,
+    },
+}
 
 /// Everything needed to losslessly re-commit an edited password.
 #[derive(Clone)]
@@ -345,16 +362,24 @@ impl Session {
     ///
     /// Reclaims chain slots against the server's device cap (go-sync counts
     /// every non-deleted DeviceInfo record, and never expires them itself).
-    pub fn commit_delete_stale_devices(&self, cutoff_unix: i64) -> Result<Vec<String>, String> {
+    ///
+    /// `cancel` is polled between devices so a long purge can be aborted (the
+    /// names removed before the abort are still returned). `on_progress` is
+    /// called as the purge advances so callers can surface live status.
+    pub fn commit_delete_stale_devices(
+        &self,
+        cutoff_unix: i64,
+        cancel: &AtomicBool,
+        mut on_progress: impl FnMut(PurgeProgress),
+    ) -> Result<Vec<String>, String> {
         let client = self.client()?;
         let keybag = self.build_keybag(&client)?;
         let current_guid = format!("brave-vault-{}", self.client_id().unwrap_or_default());
         let (entries, _) = client.fetch_all_devices().map_err(|e| e.to_string())?;
-        eprintln!(
-            "[purge] fetched {} device entrie(s); cutoff_unix={cutoff_unix}, current_guid={current_guid}",
-            entries.len()
-        );
-        let mut removed = Vec::new();
+        let fetched_total = entries.len();
+
+        // First pass: identify the stale, non-current devices to remove.
+        let mut to_remove: Vec<(String, proto::SyncEntity)> = Vec::new();
         for e in entries {
             if e.deleted() {
                 continue;
@@ -365,23 +390,35 @@ impl Session {
             let item = DeviceItem::from_specifics(&di);
             let is_current = item.cache_guid == current_guid;
             let stale = item.last_updated_unix > 0 && item.last_updated_unix < cutoff_unix;
-            eprintln!(
-                "[purge]   device {:?}: last_updated_unix={}, is_current={}, stale={} -> {}",
-                item.name,
-                item.last_updated_unix,
-                is_current,
-                stale,
-                if is_current || !stale { "keep" } else { "PURGE" }
-            );
             if is_current || !stale {
                 continue;
             }
+            to_remove.push((item.name, e));
+        }
+
+        let stale_total = to_remove.len();
+        on_progress(PurgeProgress::Fetched {
+            total: fetched_total,
+            stale: stale_total,
+        });
+
+        // Second pass: tombstone each, reporting progress and honoring cancel.
+        let mut removed = Vec::new();
+        for (i, (name, e)) in to_remove.into_iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            on_progress(PurgeProgress::Removing {
+                name: name.clone(),
+                index: i + 1,
+                stale: stale_total,
+            });
             let marker = proto::EntitySpecifics {
                 device_info: Some(proto::DeviceInfoSpecifics::default()),
                 ..Default::default()
             };
             self.tombstone(&client, e, marker)?;
-            removed.push(item.name);
+            removed.push(name);
         }
         Ok(removed)
     }
