@@ -350,6 +350,10 @@ impl Session {
         let keybag = self.build_keybag(&client)?;
         let current_guid = format!("brave-vault-{}", self.client_id().unwrap_or_default());
         let (entries, _) = client.fetch_all_devices().map_err(|e| e.to_string())?;
+        eprintln!(
+            "[purge] fetched {} device entrie(s); cutoff_unix={cutoff_unix}, current_guid={current_guid}",
+            entries.len()
+        );
         let mut removed = Vec::new();
         for e in entries {
             if e.deleted() {
@@ -361,6 +365,14 @@ impl Session {
             let item = DeviceItem::from_specifics(&di);
             let is_current = item.cache_guid == current_guid;
             let stale = item.last_updated_unix > 0 && item.last_updated_unix < cutoff_unix;
+            eprintln!(
+                "[purge]   device {:?}: last_updated_unix={}, is_current={}, stale={} -> {}",
+                item.name,
+                item.last_updated_unix,
+                is_current,
+                stale,
+                if is_current || !stale { "keep" } else { "PURGE" }
+            );
             if is_current || !stale {
                 continue;
             }

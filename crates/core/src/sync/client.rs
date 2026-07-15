@@ -58,8 +58,16 @@ pub struct UpdateBatch {
 impl SyncClient {
     pub fn new(keys: SyncKeys, config: Config) -> Self {
         let command_url = format!("{}/command/", config.endpoint.trim_end_matches('/'));
+        // Bound every request so an unreachable/slow sync server surfaces as an
+        // error the UI can report, instead of hanging a command forever (e.g.
+        // the device purge, which makes several sequential round-trips).
+        let http = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
         SyncClient {
-            http: reqwest::blocking::Client::new(),
+            http,
             keys,
             config,
             command_url,

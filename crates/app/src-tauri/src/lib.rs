@@ -1072,12 +1072,14 @@ async fn purge_stale_devices(days: i64, state: State<'_, SharedState>) -> Result
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let cutoff = now - days.max(0) * 86400;
+    eprintln!("[purge] command invoked: days={days}, cutoff_unix={cutoff}");
     let shared = state.inner().clone();
     let removed = tauri::async_runtime::spawn_blocking(move || {
         Session::new(cfg, mnemonic).commit_delete_stale_devices(cutoff)
     })
     .await
     .map_err(|e| e.to_string())??;
+    eprintln!("[purge] commit_delete_stale_devices returned {} device(s): {:?}", removed.len(), removed);
     if !removed.is_empty() {
         let mut st = shared.lock().unwrap();
         let gone: std::collections::HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();

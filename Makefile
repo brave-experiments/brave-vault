@@ -47,9 +47,15 @@ $(APP_DIR)/node_modules: $(APP_DIR)/package.json
 	@touch $@
 
 # ---- current-platform debug build (dev loop) ----
-# Backend embeds dist/ at compile time, so it depends on the frontend build.
+# Backend embeds dist/ at compile time (tauri::generate_context! in lib.rs), so
+# it depends on the frontend build. Touch lib.rs first: cargo does NOT reliably
+# invalidate the embedded assets when only dist/ changes, so without this a
+# frontend-only edit relinks the binary but bakes in the STALE UI. Touching the
+# file that hosts generate_context! forces the app crate to recompile and
+# re-embed the fresh dist/ every build.
 .PHONY: backend
 backend: frontend
+	touch $(TAURI_DIR)/src/lib.rs
 	$(CARGO) build --bin brave_vault
 
 .PHONY: run

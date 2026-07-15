@@ -178,6 +178,7 @@ function Main({ setScreen, showToast }) {
   const [genOpen, setGenOpen] = useState(false);
   const [ctx, setCtx] = useState(null); // {x,y,item}
   const [savingId, setSavingId] = useState(null);
+  const [purging, setPurging] = useState(false);
   const reqSeq = useRef(0);
 
   const folder = folderStack.length ? folderStack[folderStack.length - 1].guid : "";
@@ -289,14 +290,28 @@ function Main({ setScreen, showToast }) {
   };
 
   const purgeStaleDevices = async () => {
+    if (purging) return;
     const days = 30;
-    if (!confirm(`Remove every device on this chain that hasn't synced in ${days} days?\n\nThis only affects your own sync chain and frees up slots against the device limit. A device that is still active will re-appear when it next syncs.`)) return;
+    console.log("[purge] button clicked");
+    if (!confirm(`Remove every device on this chain that hasn't synced in ${days} days?\n\nThis only affects your own sync chain and frees up slots against the device limit. A device that is still active will re-appear when it next syncs.`)) {
+      console.log("[purge] cancelled at confirm()");
+      return;
+    }
+    console.log("[purge] confirmed, invoking purge_stale_devices");
+    // The purge fetches the device list then commits a tombstone per stale
+    // device — several network round-trips that can take a while. Show a
+    // spinner on the button throughout so it's clear work is happening.
+    setPurging(true);
     try {
       const n = await invoke("purge_stale_devices", { days });
+      console.log("[purge] done, removed count =", n);
       showToast(n > 0 ? `Removed ${n} stale device${n > 1 ? "s" : ""}` : "No stale devices found");
       await refresh();
     } catch (e) {
+      console.error("[purge] failed:", e);
       showToast("Purge failed: " + e);
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -370,8 +385,9 @@ function Main({ setScreen, showToast }) {
             }}><Icon name="plus-add" slot="icon-before" />New</Button>
           )}
           {view === "devices" && (
-            <Button size="small" kind="outline" onClick={purgeStaleDevices}>
-              <Icon name="trash" slot="icon-before" />Purge stale
+            <Button size="small" kind="outline" onClick={purgeStaleDevices}
+              isLoading={purging} isDisabled={purging}>
+              <Icon name="trash" slot="icon-before" />{purging ? "Purging…" : "Purge stale"}
             </Button>
           )}
         </div>
