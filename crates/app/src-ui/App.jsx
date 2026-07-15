@@ -179,6 +179,9 @@ function Main({ setScreen, showToast }) {
   const [ctx, setCtx] = useState(null); // {x,y,item}
   const [savingId, setSavingId] = useState(null);
   const [purging, setPurging] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState("");
+  const purgeArmed = useRef(false);
+  const purgeArmTimer = useRef(null);
   const reqSeq = useRef(0);
 
   const folder = folderStack.length ? folderStack[folderStack.length - 1].guid : "";
@@ -293,25 +296,44 @@ function Main({ setScreen, showToast }) {
     if (purging) return;
     const days = 30;
     console.log("[purge] button clicked");
-    if (!confirm(`Remove every device on this chain that hasn't synced in ${days} days?\n\nThis only affects your own sync chain and frees up slots against the device limit. A device that is still active will re-appear when it next syncs.`)) {
-      console.log("[purge] cancelled at confirm()");
+    // Two-step in-app confirm. window.confirm() is unreliable inside the Tauri
+    // webview (can silently return false), so we arm on the first click and
+    // run on the second — and narrate every step on-screen via purgeMsg so the
+    // action can never look like it did nothing.
+    if (!purgeArmed.current) {
+      purgeArmed.current = true;
+      setPurgeMsg(`Click "Purge stale" again to remove devices not synced in ${days} days`);
+      clearTimeout(purgeArmTimer.current);
+      purgeArmTimer.current = setTimeout(() => {
+        purgeArmed.current = false;
+        setPurgeMsg("");
+      }, 6000);
       return;
     }
+    clearTimeout(purgeArmTimer.current);
+    purgeArmed.current = false;
     console.log("[purge] confirmed, invoking purge_stale_devices");
     // The purge fetches the device list then commits a tombstone per stale
-    // device — several network round-trips that can take a while. Show a
-    // spinner on the button throughout so it's clear work is happening.
+    // device — several network round-trips that can take a while.
     setPurging(true);
+    setPurgeMsg("Contacting sync server…");
     try {
       const n = await invoke("purge_stale_devices", { days });
       console.log("[purge] done, removed count =", n);
-      showToast(n > 0 ? `Removed ${n} stale device${n > 1 ? "s" : ""}` : "No stale devices found");
+      const msg = n > 0
+        ? `Removed ${n} stale device${n > 1 ? "s" : ""}`
+        : "Done — no devices were stale (none older than 30 days)";
+      setPurgeMsg(msg);
+      showToast(msg);
       await refresh();
     } catch (e) {
       console.error("[purge] failed:", e);
-      showToast("Purge failed: " + e);
+      const msg = "Purge failed: " + e;
+      setPurgeMsg(msg);
+      showToast(msg);
     } finally {
       setPurging(false);
+      setTimeout(() => setPurgeMsg(""), 8000);
     }
   };
 
@@ -386,9 +408,14 @@ function Main({ setScreen, showToast }) {
           )}
           {view === "devices" && (
             <Button size="small" kind="outline" onClick={purgeStaleDevices}
-              isLoading={purging} isDisabled={purging}>
+              isLoading={purging}>
               <Icon name="trash" slot="icon-before" />{purging ? "Purging…" : "Purge stale"}
             </Button>
+          )}
+          {view === "devices" && purgeMsg && (
+            <span style={{ marginLeft: 12, fontSize: 13, alignSelf: "center", color: "var(--leo-color-text-secondary, #666)" }}>
+              {purgeMsg}
+            </span>
           )}
         </div>
         {(isPwView || view === "bookmarks") && (
