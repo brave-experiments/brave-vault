@@ -419,12 +419,10 @@ function Main({ setScreen, showToast }) {
               Cancel purge
             </Button>
           )}
-          {view === "devices" && purgeMsg && (
-            <span style={{ marginLeft: 12, fontSize: 13, alignSelf: "center", color: "var(--leo-color-text-secondary, #666)" }}>
-              {purgeMsg}
-            </span>
-          )}
         </div>
+        {view === "devices" && purgeMsg && (
+          <div className="purge-status">{purgeMsg}</div>
+        )}
         {(isPwView || view === "bookmarks") && (
           <div className="toolbar">
             {isPwView && (

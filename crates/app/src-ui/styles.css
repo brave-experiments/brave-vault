@@ -83,7 +83,11 @@ body {
 /* List column */
 .list-col { background: var(--bg-elev); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .list-header { display: flex; gap: 8px; padding: 12px; padding-top: 46px; align-items: center; }
-.list-header .search { flex: 1; }
+/* Search is the primary control: it grows to fill the row; action buttons stay
+   at their natural (small) size and never wrap or stretch. */
+.list-header .search { flex: 1 1 auto; min-width: 0; }
+.list-header leo-button { flex: 0 0 auto; white-space: nowrap; }
+.purge-status { padding: 0 12px 10px; font-size: 13px; color: var(--muted, #888); }
 .toolbar { display: flex; align-items: center; gap: 8px; padding: 0 12px 8px; }
 .toolbar .mini { flex: 1; }
 .crumb { padding: 6px 14px; color: var(--accent-2); font-size: 13px; cursor: pointer; }
