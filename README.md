@@ -26,6 +26,9 @@ make frontend   # build only the React/Vite frontend
 make clean      # remove build artifacts
 ```
 
+On Linux, run `make setup-linux` once first to install the GTK/webkit2gtk dev
+libraries Tauri needs.
+
 Release bundles:
 
 ```sh

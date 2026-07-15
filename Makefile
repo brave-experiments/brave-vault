@@ -3,6 +3,9 @@
 #   make            build for the CURRENT platform (fast debug build)
 #   make run        build, then launch (loads BRAVE_SERVICES_KEY from .envrc)
 #
+#   On Linux, run `make setup-linux` once first to install the GTK/webkit2gtk
+#   dev libraries Tauri needs for a native build.
+#
 #   make mac        release .app + .dmg           (native; macOS host)
 #   make windows    release NSIS installer         (cross-compiled via cargo-xwin)
 #   make linux      release .deb + .rpm             (via Docker)
@@ -12,11 +15,12 @@
 #   make icons      regenerate app icons from icons/icon.png (incl. Windows .ico)
 #   make clean      remove build artifacts
 
-# Use the rustup toolchain explicitly — the system cargo in /usr/local/bin is
-# 1.83 and too old for some deps (edition2024). Call the toolchain binary by
-# absolute path so PATH ordering can't pick the wrong one.
-RUST_BIN  := $(HOME)/.rustup/toolchains/stable-x86_64-apple-darwin/bin
-CARGO     := $(RUST_BIN)/cargo
+# Use the rustup-managed toolchain explicitly — a system cargo (e.g. Homebrew
+# 1.83) can be too old for some deps (edition2024). Resolve it via `rustup which`
+# so this works on any host/target triple (macOS, Linux) instead of hardcoding
+# one. Falls back to plain `cargo` if rustup isn't installed.
+CARGO     := $(shell rustup which cargo 2>/dev/null || command -v cargo)
+RUST_BIN  := $(dir $(CARGO))
 CARGO_BIN := $(HOME)/.cargo/bin
 LLVM_BIN  := /usr/local/opt/llvm/bin
 export PATH := $(RUST_BIN):$(CARGO_BIN):$(PATH)
@@ -77,6 +81,20 @@ linux: frontend
 all: mac windows linux
 
 # ---- one-time cross-build setup ----
+# Linux: install the GTK/webkit2gtk dev libraries Tauri links against, so the
+# native `make` / `make run` dev loop works directly on a Linux host (no Docker).
+# Debian/Ubuntu (apt); adapt package names for other distros.
+.PHONY: setup-linux
+setup-linux:
+	sudo apt-get update
+	sudo apt-get install -y \
+		libwebkit2gtk-4.1-dev \
+		libgtk-3-dev \
+		libayatana-appindicator3-dev \
+		librsvg2-dev \
+		libssl-dev \
+		pkg-config
+
 .PHONY: setup-windows
 setup-windows:
 	$(CARGO) install tauri-cli --version "^2" --locked || true
