@@ -84,7 +84,7 @@ function Unlock({ setScreen }) {
         <h1>Brave Vault</h1>
         <p className="muted">Enter your vault password to unlock</p>
         <Input ref={inputRef} type="password" placeholder="Password" value={pw}
-          onInput={(e) => setPw(e.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+          onInput={(e) => setPw(e.value)} onKeyDown={(e) => { if ((e.innerEvent ?? e).key === "Enter") submit(); }} />
         <Button onClick={submit}>Unlock</Button>
         {err && <div className="error">{err}</div>}
       </div>
