@@ -288,6 +288,18 @@ function Main({ setScreen, showToast }) {
     runInBackground(() => invoke("delete_device", { cacheGuid: item.guid }), { ok: "Device removed", fail: "Remove failed" });
   };
 
+  const purgeStaleDevices = async () => {
+    const days = 30;
+    if (!confirm(`Remove every device on this chain that hasn't synced in ${days} days?\n\nThis only affects your own sync chain and frees up slots against the device limit. A device that is still active will re-appear when it next syncs.`)) return;
+    try {
+      const n = await invoke("purge_stale_devices", { days });
+      showToast(n > 0 ? `Removed ${n} stale device${n > 1 ? "s" : ""}` : "No stale devices found");
+      await refresh();
+    } catch (e) {
+      showToast("Purge failed: " + e);
+    }
+  };
+
   const saveItem = async (args, uid) => {
     // Optimistic: patch the edited row in place (or just close for a new item),
     // then commit + reconcile in the background.
@@ -356,6 +368,11 @@ function Main({ setScreen, showToast }) {
               else if (view === "identities") setEditing({ mode: "newidentity" });
               else setEditing({ mode: "new" });
             }}><Icon name="plus-add" slot="icon-before" />New</Button>
+          )}
+          {view === "devices" && (
+            <Button size="small" kind="outline" onClick={purgeStaleDevices}>
+              <Icon name="trash" slot="icon-before" />Purge stale
+            </Button>
           )}
         </div>
         {(isPwView || view === "bookmarks") && (

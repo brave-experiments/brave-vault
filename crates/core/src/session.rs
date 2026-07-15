@@ -338,6 +338,42 @@ impl Session {
         self.tombstone(&client, entity, marker)
     }
 
+    /// Tombstone every non-current device whose last-updated time is before
+    /// `cutoff_unix` (unix seconds). Devices with an unknown time (0) are kept,
+    /// so we only ever purge records we can positively date as stale. Fetches
+    /// the device list once, then tombstones matches. Returns the removed names.
+    ///
+    /// Reclaims chain slots against the server's device cap (go-sync counts
+    /// every non-deleted DeviceInfo record, and never expires them itself).
+    pub fn commit_delete_stale_devices(&self, cutoff_unix: i64) -> Result<Vec<String>, String> {
+        let client = self.client()?;
+        let keybag = self.build_keybag(&client)?;
+        let current_guid = format!("brave-vault-{}", self.client_id().unwrap_or_default());
+        let (entries, _) = client.fetch_all_devices().map_err(|e| e.to_string())?;
+        let mut removed = Vec::new();
+        for e in entries {
+            if e.deleted() {
+                continue;
+            }
+            let Some(di) = decode_specifics(&e, &keybag).and_then(|es| es.device_info) else {
+                continue;
+            };
+            let item = DeviceItem::from_specifics(&di);
+            let is_current = item.cache_guid == current_guid;
+            let stale = item.last_updated_unix > 0 && item.last_updated_unix < cutoff_unix;
+            if is_current || !stale {
+                continue;
+            }
+            let marker = proto::EntitySpecifics {
+                device_info: Some(proto::DeviceInfoSpecifics::default()),
+                ..Default::default()
+            };
+            self.tombstone(&client, e, marker)?;
+            removed.push(item.name);
+        }
+        Ok(removed)
+    }
+
     fn tombstone(
         &self,
         client: &SyncClient,

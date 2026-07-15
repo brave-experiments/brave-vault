@@ -1060,6 +1060,33 @@ async fn delete_device(cache_guid: String, state: State<'_, SharedState>) -> Res
     commit_durable(cfg, mnemonic, OutboxOp::DeleteDevice { cache_guid }).await
 }
 
+/// Tombstone every non-current device on the chain that hasn't synced in the
+/// last `days` days. Only affects this chain (keyed by our mnemonic). Returns
+/// the number of devices removed. Runs the blocking network work off the UI
+/// thread; drops the purged rows from the cached DTOs on success.
+#[tauri::command]
+async fn purge_stale_devices(days: i64, state: State<'_, SharedState>) -> Result<usize, String> {
+    let (cfg, mnemonic) = creds(&state)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let cutoff = now - days.max(0) * 86400;
+    let shared = state.inner().clone();
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        Session::new(cfg, mnemonic).commit_delete_stale_devices(cutoff)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if !removed.is_empty() {
+        let mut st = shared.lock().unwrap();
+        let gone: std::collections::HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
+        st.devices.retain(|d| d.is_current || !gone.contains(d.name.as_str()));
+        st.dev_dtos.retain(|d| d.current || !gone.contains(d.title.as_str()));
+    }
+    Ok(removed.len())
+}
+
 #[tauri::command]
 async fn delete_item(id: String, state: State<'_, SharedState>) -> Result<(), String> {
     let (cfg, mnemonic) = creds(&state)?;
@@ -1216,6 +1243,7 @@ pub fn run() {
             save_identity,
             delete_item,
             delete_device,
+            purge_stale_devices,
             replay_outbox,
             fetch_favicons,
             lock,
