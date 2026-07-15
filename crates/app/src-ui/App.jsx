@@ -179,7 +179,8 @@ function Main({ setScreen, showToast }) {
   const [genOpen, setGenOpen] = useState(false);
   const [ctx, setCtx] = useState(null); // {x,y,item}
   const [savingId, setSavingId] = useState(null);
-  const [purging, setPurging] = useState(false);
+  const [purging, setPurging] = useState(false); // bulk purge running (shows Cancel)
+  const [busy, setBusy] = useState(false);        // any device op running (shows spinner)
   const [purgeMsg, setPurgeMsg] = useState("");
   const reqSeq = useRef(0);
 
@@ -285,10 +286,26 @@ function Main({ setScreen, showToast }) {
     runInBackground(() => invoke("delete_item", { id: item.id }), { ok: "Deleted", fail: "Delete failed" });
   };
 
-  const removeDevice = (item) => {
-    if (!confirm(`Remove "${item.title}" from the sync chain?\n\nIf this device is still online it will re-appear the next time it syncs.`)) return;
-    setItems((cur) => cur.filter((r) => r.uid !== item.uid));
-    runInBackground(() => invoke("delete_device", { cacheGuid: item.guid }), { ok: "Device removed", fail: "Remove failed" });
+  const removeDevice = async (item) => {
+    if (busy) return;
+    // Reuse the purge status row + spinner for single-device removal. No
+    // window.confirm() (it silently returns false inside the webview); the
+    // device re-appears on next sync if it's still active, so this is safe.
+    setBusy(true);
+    setPurgeMsg(`Removing ${item.title}…`);
+    try {
+      await invoke("delete_device", { cacheGuid: item.guid });
+      setItems((cur) => cur.filter((r) => r.uid !== item.uid));
+      setPurgeMsg(`Removed ${item.title}`);
+      showToast("Device removed");
+      doSync({ quiet: true });
+    } catch (e) {
+      setPurgeMsg("Remove failed: " + e);
+      showToast("Remove failed: " + e);
+    } finally {
+      setBusy(false);
+      setTimeout(() => setPurgeMsg(""), 8000);
+    }
   };
 
   // Live progress streamed from the backend during a purge (device fetched /
@@ -309,11 +326,12 @@ function Main({ setScreen, showToast }) {
   }, []);
 
   const purgeStaleDevices = async () => {
-    if (purging) return;
+    if (busy) return;
     const days = 30;
     // One click starts it (Cancel button appears while it runs). The backend
     // streams purge-progress events that drive the status line above.
     setPurging(true);
+    setBusy(true);
     setPurgeMsg("Fetching device list from sync server…");
     try {
       const removed = await invoke("purge_stale_devices", { days });
@@ -331,6 +349,7 @@ function Main({ setScreen, showToast }) {
       showToast(msg);
     } finally {
       setPurging(false);
+      setBusy(false);
       setTimeout(() => setPurgeMsg(""), 8000);
     }
   };
@@ -422,7 +441,7 @@ function Main({ setScreen, showToast }) {
         </div>
         {view === "devices" && purgeMsg && (
           <div className="purge-status">
-            {purging && <span className="spinner" />}
+            {busy && <span className="spinner" />}
             <span>{purgeMsg}</span>
           </div>
         )}
