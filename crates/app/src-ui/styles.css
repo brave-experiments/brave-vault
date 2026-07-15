@@ -87,7 +87,7 @@ body {
    at their natural (small) size and never wrap or stretch. */
 .list-header .search { flex: 1 1 auto; min-width: 0; }
 .list-header leo-button { flex: 0 0 auto; white-space: nowrap; }
-.purge-status { padding: 0 12px 10px; font-size: 13px; color: var(--muted, #888); }
+.purge-status { display: flex; align-items: center; gap: 4px; padding: 0 12px 10px; font-size: 13px; color: var(--muted, #888); }
 .toolbar { display: flex; align-items: center; gap: 8px; padding: 0 12px 8px; }
 .toolbar .mini { flex: 1; }
 .crumb { padding: 6px 14px; color: var(--accent-2); font-size: 13px; cursor: pointer; }

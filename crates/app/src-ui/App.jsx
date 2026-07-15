@@ -421,7 +421,10 @@ function Main({ setScreen, showToast }) {
           )}
         </div>
         {view === "devices" && purgeMsg && (
-          <div className="purge-status">{purgeMsg}</div>
+          <div className="purge-status">
+            {purging && <span className="spinner" />}
+            <span>{purgeMsg}</span>
+          </div>
         )}
         {(isPwView || view === "bookmarks") && (
           <div className="toolbar">
