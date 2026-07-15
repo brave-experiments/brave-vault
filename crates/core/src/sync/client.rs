@@ -125,10 +125,19 @@ impl SyncClient {
         // GetUpdatesOrigin: PERIODIC=4, NEW_CLIENT=9, RECONFIGURATION=10,
         // GU_TRIGGER=12. Overridable for debugging via BRAVE_GU_ORIGIN /
         // BRAVE_GU_SOURCE.
+        //
+        // Default to GU_TRIGGER (normal mode), NOT NEW_CLIENT: the go-sync
+        // server runs its "count all devices, throttle the chain at 50" gate
+        // ONLY on NEW_CLIENT GetUpdates. Sending NEW_CLIENT on every request
+        // (as we used to) makes the server treat each ordinary sync as a fresh
+        // client joining, so a chain at the device cap throttles all our reads
+        // and even the fetch inside delete_device — devices stop refreshing and
+        // deletes fail. We derive keys from the mnemonic passphrase, so we never
+        // needed the NEW_CLIENT-only server keystore keys anyway.
         let origin: i32 = std::env::var("BRAVE_GU_ORIGIN")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(9);
+            .unwrap_or(12);
         let source: i32 = std::env::var("BRAVE_GU_SOURCE")
             .ok()
             .and_then(|s| s.parse().ok())
