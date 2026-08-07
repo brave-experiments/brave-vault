@@ -1,0 +1,7 @@
+[toolchain]
+# Use rustup's stable. Several deps (image 0.25, icu, base64ct) require a recent
+# rustc (>= 1.88), so a too-old system cargo (e.g. Homebrew 1.83) will not work;
+# the Makefile resolves the rustup-managed cargo via `rustup which` for exactly
+# this reason.
+channel = "stable"
+components = ["rustfmt", "clippy"]
