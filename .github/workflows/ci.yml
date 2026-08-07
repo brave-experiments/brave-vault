@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Cross-platform proof: the agent-access transport (unix sockets on
+  # macOS/Linux, named pipes on Windows) must bind → connect → exchange on every
+  # OS. Runs the whole core suite, which includes tests/transport_roundtrip.rs,
+  # plus builds the agent CLI (keyring backends differ per platform).
+  cross-platform:
+    name: core + agent-cli (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Linux keyring uses the secret-service (D-Bus) backend, so libdbus dev
+      # headers are needed to build the agent CLI there.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        # rust-toolchain.toml pins the channel; this action honors it.
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run core tests (incl. transport round-trip)
+        run: cargo test -p brave_vault_core
+
+      - name: Build agent CLI
+        run: cargo build -p brave_vault_agent
+
+  # Format + lint, OS-independent. rustfmt is checked across the whole tree;
+  # clippy is scoped to the agent-access crates (core + agent CLI) — what this
+  # feature owns and keeps clean under -D warnings.
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy (core + agent CLI)
+        run: cargo clippy -p brave_vault_core -p brave_vault_agent -- -D warnings
