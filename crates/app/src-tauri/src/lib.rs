@@ -1,5 +1,7 @@
 //! Brave Vault — Tauri backend. Bridges the web UI to brave_vault_core.
 
+mod broker;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -60,8 +62,16 @@ enum PurgeEvent {
 /// Rebuild the cached DTOs from the current passwords/bookmarks. Reads favicon
 /// files from disk once here (not on every list_items call).
 fn rebuild_dtos(st: &mut AppState) {
-    st.pw_dtos = st.passwords.iter().map(|r| password_dto(r, false)).collect();
-    st.bm_dtos = st.bookmarks.iter().map(|b| bookmark_dto(b, false)).collect();
+    st.pw_dtos = st
+        .passwords
+        .iter()
+        .map(|r| password_dto(r, false))
+        .collect();
+    st.bm_dtos = st
+        .bookmarks
+        .iter()
+        .map(|b| bookmark_dto(b, false))
+        .collect();
     st.id_dtos = st.identities.iter().map(identity_dto).collect();
     st.rl_dtos = st.reading_list.iter().map(link_dto).collect();
     st.tg_dtos = st.tab_groups.iter().map(link_dto).collect();
@@ -139,10 +149,10 @@ fn compute_password_flags(pw: &mut [ItemDto]) {
 
 #[derive(Serialize, Clone)]
 struct ItemDto {
-    id: String,       // stable fav/lookup key: "pw:.." / "bm:.." (may collide
-                      // for conflicting entries that share realm+username)
-    uid: String,      // unique per entry, for UI selection/highlight
-    kind: String,     // "password" | "bookmark" | "folder"
+    id: String, // stable fav/lookup key: "pw:.." / "bm:.." (may collide
+    // for conflicting entries that share realm+username)
+    uid: String,  // unique per entry, for UI selection/highlight
+    kind: String, // "password" | "bookmark" | "folder"
     title: String,
     subtitle: String,
     username: String,
@@ -150,11 +160,11 @@ struct ItemDto {
     url: String,
     notes: String,
     initials: String,
-    favicon: String,  // data URI or ""
+    favicon: String, // data URI or ""
     favorite: bool,
     strength: i32,
     strength_label: String,
-    guid: String,       // bookmark guid (for folders)
+    guid: String, // bookmark guid (for folders)
     parent_guid: String,
     // Sorting keys (microseconds since Windows epoch, as Brave stores).
     date_created: i64,
@@ -163,13 +173,13 @@ struct ItemDto {
     // Watchtower flags (passwords only).
     weak: bool,
     reused: bool,
-    conflict: bool,   // same realm+username, different password
-    realm: String,    // signon_realm, for grouping related items
-    favkey: String,   // favicon host key; JS resolves the image from a cache
+    conflict: bool, // same realm+username, different password
+    realm: String,  // signon_realm, for grouping related items
+    favkey: String, // favicon host key; JS resolves the image from a cache
     #[serde(default)]
-    current: bool,    // devices: this is the current device
+    current: bool, // devices: this is the current device
     #[serde(default)]
-    pending: bool,    // has an uncommitted change queued in the outbox
+    pending: bool, // has an uncommitted change queued in the outbox
 }
 
 #[derive(Serialize, Clone)]
@@ -323,8 +333,16 @@ fn apply_outbox_overlay(st: &mut AppState) {
             OutboxOp::SavePassword(args) if !args.id.is_empty() => {
                 // Edit of an existing password: patch the matching row in place.
                 let key = args.id.strip_prefix("pw:").unwrap_or(&args.id);
-                for d in st.pw_dtos.iter_mut().filter(|d| d.id == format!("pw:{key}")) {
-                    d.title = if args.title.is_empty() { d.title.clone() } else { args.title.clone() };
+                for d in st
+                    .pw_dtos
+                    .iter_mut()
+                    .filter(|d| d.id == format!("pw:{key}"))
+                {
+                    d.title = if args.title.is_empty() {
+                        d.title.clone()
+                    } else {
+                        args.title.clone()
+                    };
                     d.username = args.username.clone();
                     d.subtitle = args.username.clone();
                     d.password = args.password.clone();
@@ -479,7 +497,11 @@ fn bookmark_dto(b: &BookmarkItem, favorite: bool) -> ItemDto {
     ItemDto {
         id: bm_key(b),
         uid: bm_key(b), // bookmark guids are unique
-        kind: if b.is_folder { "folder".into() } else { "bookmark".into() },
+        kind: if b.is_folder {
+            "folder".into()
+        } else {
+            "bookmark".into()
+        },
         initials: initials_from(&b.title),
         title: b.title.clone(),
         subtitle: b.url.clone(),
@@ -556,11 +578,19 @@ fn identity_dto(it: &IdentityItem) -> ItemDto {
 /// DTO for a reading-list item / tab-group tab / open tab. Group header rows
 /// use kind "group" (rendered like a folder label, not clickable to open).
 fn link_dto(it: &LinkItem) -> ItemDto {
-    let favkey = if it.is_group { String::new() } else { favicon::host_of(&it.url).unwrap_or_default() };
+    let favkey = if it.is_group {
+        String::new()
+    } else {
+        favicon::host_of(&it.url).unwrap_or_default()
+    };
     ItemDto {
         id: it.id.clone(),
         uid: it.id.clone(),
-        kind: if it.is_group { "group".into() } else { "link".into() },
+        kind: if it.is_group {
+            "group".into()
+        } else {
+            "link".into()
+        },
         initials: initials_from(&it.title),
         title: it.title.clone(),
         subtitle: it.url.clone(),
@@ -711,7 +741,11 @@ fn unlock(password: String, state: State<SharedState>) -> Result<bool, String> {
             .collect();
         stamp_uids(&mut st.pw_dtos);
         compute_password_flags(&mut st.pw_dtos); // so Weak/Reused/Conflict work pre-sync
-        st.bm_dtos = data.cached_bookmarks.iter().map(|b| bookmark_dto(b, false)).collect();
+        st.bm_dtos = data
+            .cached_bookmarks
+            .iter()
+            .map(|b| bookmark_dto(b, false))
+            .collect();
         compute_bookmark_flags(&mut st.bm_dtos);
         st.identities = data.cached_identities.clone();
         st.id_dtos = data.cached_identities.iter().map(identity_dto).collect();
@@ -766,7 +800,9 @@ async fn sync(state: State<'_, SharedState>) -> Result<SyncResult, String> {
     };
     // Heavy blocking network + crypto off the UI thread.
     let data = tauri::async_runtime::spawn_blocking(move || {
-        Session::new(cfg, mnemonic.clone()).fetch_all().map(|d| (mnemonic, d))
+        Session::new(cfg, mnemonic.clone())
+            .fetch_all()
+            .map(|d| (mnemonic, d))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -866,7 +902,8 @@ fn list_items(
     };
     if let Some(src) = link_src {
         for d in src.iter() {
-            if !q.is_empty() && d.kind != "group"
+            if !q.is_empty()
+                && d.kind != "group"
                 && !(d.title.to_lowercase().contains(&q) || d.url.to_lowercase().contains(&q))
             {
                 continue;
@@ -892,7 +929,9 @@ fn list_items(
                 .collect();
             // Group duplicates together by URL, then title.
             dups.sort_by(|a, b| {
-                a.url.to_lowercase().cmp(&b.url.to_lowercase())
+                a.url
+                    .to_lowercase()
+                    .cmp(&b.url.to_lowercase())
                     .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
             });
             for mut b in dups {
@@ -909,7 +948,8 @@ fn list_items(
             .filter(|b| {
                 if !q.is_empty() {
                     b.kind != "folder"
-                        && (b.title.to_lowercase().contains(&q) || b.url.to_lowercase().contains(&q))
+                        && (b.title.to_lowercase().contains(&q)
+                            || b.url.to_lowercase().contains(&q))
                 } else if folder.is_empty() {
                     !known.contains(b.parent_guid.as_str())
                 } else {
@@ -961,7 +1001,11 @@ fn list_items(
             .bm_dtos
             .iter()
             .filter(|b| b.kind != "folder" && favset.contains(b.id.as_str()))
-            .filter(|b| q.is_empty() || b.title.to_lowercase().contains(&q) || b.url.to_lowercase().contains(&q))
+            .filter(|b| {
+                q.is_empty()
+                    || b.title.to_lowercase().contains(&q)
+                    || b.url.to_lowercase().contains(&q)
+            })
             .cloned()
             .collect();
         bm.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
@@ -979,7 +1023,9 @@ fn list_items(
 fn related_items(uid: String, state: State<SharedState>) -> Vec<ItemDto> {
     let st = state.lock().unwrap();
     let favset: std::collections::HashSet<&str> = st.favorites.iter().map(|s| s.as_str()).collect();
-    let Some(me) = st.pw_dtos.iter().find(|d| d.uid == uid) else { return Vec::new() };
+    let Some(me) = st.pw_dtos.iter().find(|d| d.uid == uid) else {
+        return Vec::new();
+    };
     if me.realm.is_empty() {
         return Vec::new();
     }
@@ -1114,8 +1160,10 @@ async fn purge_stale_devices(
     if !removed.is_empty() {
         let mut st = shared.lock().unwrap();
         let gone: std::collections::HashSet<&str> = removed.iter().map(|s| s.as_str()).collect();
-        st.devices.retain(|d| d.is_current || !gone.contains(d.name.as_str()));
-        st.dev_dtos.retain(|d| d.current || !gone.contains(d.title.as_str()));
+        st.devices
+            .retain(|d| d.is_current || !gone.contains(d.name.as_str()));
+        st.dev_dtos
+            .retain(|d| d.current || !gone.contains(d.title.as_str()));
     }
     Ok(removed)
 }
@@ -1261,12 +1309,280 @@ fn lock(state: State<SharedState>) {
     st.mnemonic = None;
 }
 
+// ---------- agent-access commands (UI ↔ broker) ----------
+
+use brave_vault_core::agent::model::{Action, ApprovedBy, AuditEntry, GrantRecord};
+
+/// The user's answer to an approval popup, forwarded to the blocked broker
+/// thread. `ttl_secs`/`max_uses` are ignored when `approved` is false.
+#[tauri::command]
+fn agent_respond(
+    request_id: String,
+    approved: bool,
+    ttl_secs: u64,
+    max_uses: u32,
+    broker: State<broker::BrokerHandle>,
+) -> bool {
+    broker.resolve(
+        &request_id,
+        broker::ApprovalResponse {
+            approved,
+            ttl_secs,
+            max_uses,
+        },
+    )
+}
+
+#[derive(Serialize)]
+struct HandleDto {
+    handle_id: String,
+    label: String,
+    created_unix: u64,
+    last_used_unix: Option<u64>,
+}
+
+/// List enrolled (non-revoked) agent handles. Never returns the secret.
+#[tauri::command]
+fn agent_list_handles() -> Vec<HandleDto> {
+    load_vault()
+        .map(|d| {
+            d.agent_handles
+                .iter()
+                .filter(|h| h.is_active())
+                .map(|h| HandleDto {
+                    handle_id: h.handle_id.clone(),
+                    label: h.label.clone(),
+                    created_unix: h.created_unix,
+                    last_used_unix: h.last_used_unix,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Revoke a handle. Its grants are dropped too, so any in-flight capability
+/// dies immediately.
+#[tauri::command]
+fn agent_revoke_handle(handle_id: String) -> Result<(), String> {
+    let mut data = load_vault().unwrap_or_default();
+    let label = data
+        .agent_handles
+        .iter()
+        .find(|h| h.handle_id == handle_id)
+        .map(|h| h.label.clone())
+        .unwrap_or_default();
+    for h in data.agent_handles.iter_mut() {
+        if h.handle_id == handle_id {
+            h.revoked = true;
+        }
+    }
+    data.agent_grants.retain(|g| g.handle_id != handle_id);
+    data.agent_audit.push(AuditEntry {
+        at_unix: now_unix_secs(),
+        handle_id,
+        handle_label: label,
+        event: "revoke".into(),
+        item_id: String::new(),
+        action: None,
+        detail: "handle revoked by user".into(),
+    });
+    write_vault(&data)
+}
+
+#[derive(Serialize)]
+struct GrantDto {
+    grant_id: String,
+    handle_id: String,
+    scope: Vec<String>,
+    action: String,
+    expires_unix: u64,
+    uses_remaining: u32,
+    approved_by: String,
+    reason: String,
+}
+
+fn grant_to_dto(g: &GrantRecord) -> GrantDto {
+    GrantDto {
+        grant_id: g.grant_id.clone(),
+        handle_id: g.handle_id.clone(),
+        scope: g.scope.clone(),
+        action: match g.action {
+            Action::Reveal => "reveal".into(),
+            Action::Use => "use".into(),
+        },
+        expires_unix: g.expires_unix,
+        uses_remaining: g.uses_remaining,
+        approved_by: match g.approved_by {
+            ApprovedBy::UserPopup => "user-popup".into(),
+            ApprovedBy::PreCreated => "pre-created".into(),
+            ApprovedBy::HandlePolicy => "handle-policy".into(),
+        },
+        reason: g.reason.clone(),
+    }
+}
+
+/// List currently live grants (across all handles) for the UI.
+#[tauri::command]
+fn agent_list_grants() -> Vec<GrantDto> {
+    let now = now_unix_secs();
+    load_vault()
+        .map(|d| {
+            d.agent_grants
+                .iter()
+                .filter(|g| g.is_live(now))
+                .map(grant_to_dto)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Revoke a single grant by id.
+#[tauri::command]
+fn agent_revoke_grant(grant_id: String) -> Result<(), String> {
+    let mut data = load_vault().unwrap_or_default();
+    data.agent_grants.retain(|g| g.grant_id != grant_id);
+    write_vault(&data)
+}
+
+/// Pre-create a grant the user authorizes ahead of time. `item` is resolved to
+/// a concrete id against the currently-synced data; ambiguous/absent queries
+/// error so the user picks a real, unambiguous item.
+#[tauri::command]
+fn agent_precreate_grant(
+    handle_id: String,
+    item: String,
+    action: String,
+    ttl_secs: u64,
+    max_uses: u32,
+    state: State<SharedState>,
+) -> Result<GrantDto, String> {
+    let action = match action.as_str() {
+        "reveal" => Action::Reveal,
+        "use" => Action::Use,
+        _ => return Err("action must be 'reveal' or 'use'".into()),
+    };
+    let mut data = load_vault().unwrap_or_default();
+    if !data
+        .agent_handles
+        .iter()
+        .any(|h| h.handle_id == handle_id && h.is_active())
+    {
+        return Err("unknown or revoked handle".into());
+    }
+    // Resolve against the in-memory synced collections.
+    let (passwords, identities, bookmarks) = {
+        let st = state.lock().unwrap();
+        (
+            st.passwords
+                .iter()
+                .map(|r| r.item.clone())
+                .collect::<Vec<_>>(),
+            st.identities.clone(),
+            st.bookmarks.clone(),
+        )
+    };
+    let matches =
+        brave_vault_core::agent::resolve::resolve(&item, &passwords, &identities, &bookmarks);
+    let chosen = match matches.len() {
+        0 => return Err(format!("no vault item matches \"{item}\"")),
+        1 => matches.into_iter().next().unwrap(),
+        n => {
+            return Err(format!(
+                "\"{item}\" is ambiguous ({n} matches); be more specific"
+            ))
+        }
+    };
+    let now = now_unix_secs();
+    let g = GrantRecord {
+        grant_id: brave_vault_core::agent::auth::new_grant_id(),
+        handle_id: handle_id.clone(),
+        scope: vec![chosen.id.clone()],
+        action,
+        created_unix: now,
+        expires_unix: now + ttl_secs.max(1),
+        max_uses: max_uses.max(1),
+        uses_remaining: max_uses.max(1),
+        approved_by: ApprovedBy::PreCreated,
+        reason: "pre-created by user".into(),
+    };
+    let dto = grant_to_dto(&g);
+    let label = data
+        .agent_handles
+        .iter()
+        .find(|h| h.handle_id == handle_id)
+        .map(|h| h.label.clone())
+        .unwrap_or_default();
+    data.agent_grants.push(g);
+    data.agent_audit.push(AuditEntry {
+        at_unix: now,
+        handle_id,
+        handle_label: label,
+        event: "issue".into(),
+        item_id: chosen.id,
+        action: Some(action),
+        detail: "pre-created grant".into(),
+    });
+    write_vault(&data)?;
+    Ok(dto)
+}
+
+#[derive(Serialize)]
+struct AuditDto {
+    at_unix: u64,
+    handle_id: String,
+    handle_label: String,
+    event: String,
+    item_id: String,
+    action: String,
+    detail: String,
+}
+
+/// The agent-access audit log, newest first (capped).
+#[tauri::command]
+fn agent_audit_log(limit: usize) -> Vec<AuditDto> {
+    let mut entries: Vec<AuditEntry> = load_vault().map(|d| d.agent_audit).unwrap_or_default();
+    entries.reverse();
+    entries.truncate(if limit == 0 { 200 } else { limit });
+    entries
+        .into_iter()
+        .map(|e| AuditDto {
+            at_unix: e.at_unix,
+            handle_id: e.handle_id,
+            handle_label: e.handle_label,
+            event: e.event,
+            item_id: e.item_id,
+            action: e
+                .action
+                .map(|a| match a {
+                    Action::Reveal => "reveal".to_string(),
+                    Action::Use => "use".to_string(),
+                })
+                .unwrap_or_default(),
+            detail: e.detail,
+        })
+        .collect()
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub fn run() {
+    let shared = SharedState::default();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .manage(SharedState::default())
+        .manage(shared.clone())
         .manage(PurgeCancel::default())
+        .manage(broker::BrokerHandle::default())
+        .setup(move |app| {
+            // Start the local IPC broker so enrolled agents can request items.
+            broker::start(app.handle().clone(), shared.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             has_config,
             has_chain,
@@ -1289,6 +1605,13 @@ pub fn run() {
             replay_outbox,
             fetch_favicons,
             lock,
+            agent_respond,
+            agent_list_handles,
+            agent_revoke_handle,
+            agent_list_grants,
+            agent_revoke_grant,
+            agent_precreate_grant,
+            agent_audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Brave Vault");
