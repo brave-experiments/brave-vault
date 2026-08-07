@@ -5,6 +5,7 @@
 //! fetch, commit/write-back, the encrypted-at-rest vault, and favicon/title
 //! fetching. It has no UI dependency so it can back a desktop or mobile shell.
 
+pub mod agent;
 pub mod config;
 pub mod crypto;
 pub mod favicon;

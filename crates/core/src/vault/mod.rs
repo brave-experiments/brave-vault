@@ -61,6 +61,17 @@ pub struct VaultData {
     /// if the app closes mid-commit — it is replayed on the next startup.
     #[serde(default)]
     pub outbox: Vec<String>,
+    /// Enrolled agent handles (long-lived agent identities). See
+    /// [`crate::agent::model::HandleRecord`].
+    #[serde(default)]
+    pub agent_handles: Vec<crate::agent::model::HandleRecord>,
+    /// Live/pending agent grants (short-lived capabilities). See
+    /// [`crate::agent::model::GrantRecord`].
+    #[serde(default)]
+    pub agent_grants: Vec<crate::agent::model::GrantRecord>,
+    /// Append-only audit log of agent access events (issuance + use).
+    #[serde(default)]
+    pub agent_audit: Vec<crate::agent::model::AuditEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -101,7 +112,9 @@ pub fn seal(password: &str, data: &VaultData) -> Result<String, VaultError> {
 pub fn open(password: &str, contents: &str) -> Result<VaultData, VaultError> {
     let file: VaultFile = serde_json::from_str(contents).map_err(|_| VaultError::Format)?;
     let salt = B64.decode(&file.salt_b64).map_err(|_| VaultError::Format)?;
-    let nonce_bytes = B64.decode(&file.nonce_b64).map_err(|_| VaultError::Format)?;
+    let nonce_bytes = B64
+        .decode(&file.nonce_b64)
+        .map_err(|_| VaultError::Format)?;
     let ct = B64
         .decode(&file.ciphertext_b64)
         .map_err(|_| VaultError::Format)?;
