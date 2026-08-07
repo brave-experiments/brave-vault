@@ -72,7 +72,10 @@ impl Session {
 
     fn client(&self) -> Result<SyncClient, String> {
         let bytes = seed::bytes_from_mnemonic(&self.mnemonic).map_err(|e| e.to_string())?;
-        Ok(SyncClient::new(SyncKeys::from_seed(&bytes), self.config.clone()))
+        Ok(SyncClient::new(
+            SyncKeys::from_seed(&bytes),
+            self.config.clone(),
+        ))
     }
 
     fn build_keybag(&self, client: &SyncClient) -> Result<KeyBag, String> {
@@ -105,7 +108,9 @@ impl Session {
             let Some(blob) = pw.encrypted.as_ref().and_then(|d| d.blob.clone()) else {
                 continue;
             };
-            let Some(pt) = keybag.decrypt(&blob) else { continue };
+            let Some(pt) = keybag.decrypt(&blob) else {
+                continue;
+            };
             let Ok(data) = proto::PasswordSpecificsData::decode(pt.as_slice()) else {
                 continue;
             };
@@ -117,7 +122,10 @@ impl Session {
             });
         }
         passwords.sort_by(|a, b| {
-            a.item.title().to_lowercase().cmp(&b.item.title().to_lowercase())
+            a.item
+                .title()
+                .to_lowercase()
+                .cmp(&b.item.title().to_lowercase())
         });
 
         // Bookmarks: whole EntitySpecifics is encrypted in specifics.encrypted.
@@ -311,9 +319,12 @@ impl Session {
         let client = self.client()?;
         let keybag = self.build_keybag(&client)?;
         let (entries, _) = client.fetch_all_bookmarks().map_err(|e| e.to_string())?;
-        let entity = find_entity_by_guid(&entries, &keybag, |es| {
-            es.bookmark.as_ref().map(|b| b.guid().to_string())
-        }, guid)
+        let entity = find_entity_by_guid(
+            &entries,
+            &keybag,
+            |es| es.bookmark.as_ref().map(|b| b.guid().to_string()),
+            guid,
+        )
         .ok_or("bookmark not found")?;
         // Tombstone must still identify the datatype (Chromium AddDefaultFieldValue).
         let marker = proto::EntitySpecifics {
@@ -328,9 +339,12 @@ impl Session {
         let client = self.client()?;
         let keybag = self.build_keybag(&client)?;
         let (entries, _) = client.fetch_all_identities().map_err(|e| e.to_string())?;
-        let entity = find_entity_by_guid(&entries, &keybag, |es| {
-            es.autofill_profile.as_ref().map(|p| p.guid().to_string())
-        }, guid)
+        let entity = find_entity_by_guid(
+            &entries,
+            &keybag,
+            |es| es.autofill_profile.as_ref().map(|p| p.guid().to_string()),
+            guid,
+        )
         .ok_or("identity not found")?;
         let marker = proto::EntitySpecifics {
             autofill_profile: Some(proto::AutofillProfileSpecifics::default()),
@@ -460,17 +474,18 @@ fn decrypt_bookmarks(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<Book
         if e.deleted() {
             continue;
         }
-        let Some(specifics) = e.specifics.as_ref() else { continue };
-        let bookmark = if let Some(blob) =
-            specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref())
-        {
-            keybag
-                .decrypt(blob)
-                .and_then(|pt| proto::EntitySpecifics::decode(pt.as_slice()).ok())
-                .and_then(|es| es.bookmark)
-        } else {
-            specifics.bookmark.clone()
+        let Some(specifics) = e.specifics.as_ref() else {
+            continue;
         };
+        let bookmark =
+            if let Some(blob) = specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref()) {
+                keybag
+                    .decrypt(blob)
+                    .and_then(|pt| proto::EntitySpecifics::decode(pt.as_slice()).ok())
+                    .and_then(|es| es.bookmark)
+            } else {
+                specifics.bookmark.clone()
+            };
         let Some(b) = bookmark else { continue };
         let item = BookmarkItem::from_specifics(&b);
         if item.guid.is_empty() {
@@ -487,9 +502,10 @@ fn decrypt_identities(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<Ide
         if e.deleted() {
             continue;
         }
-        let Some(specifics) = e.specifics.as_ref() else { continue };
-        let profile = if let Some(blob) =
-            specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref())
+        let Some(specifics) = e.specifics.as_ref() else {
+            continue;
+        };
+        let profile = if let Some(blob) = specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref())
         {
             keybag
                 .decrypt(blob)
@@ -550,13 +566,18 @@ fn decode_specifics(e: &proto::SyncEntity, keybag: &KeyBag) -> Option<proto::Ent
     }
 }
 
-fn decrypt_reading_list(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<crate::model::LinkItem> {
+fn decrypt_reading_list(
+    entries: &[proto::SyncEntity],
+    keybag: &KeyBag,
+) -> Vec<crate::model::LinkItem> {
     let mut out = Vec::new();
     for e in entries {
         if e.deleted() {
             continue;
         }
-        let Some(rl) = decode_specifics(e, keybag).and_then(|es| es.reading_list) else { continue };
+        let Some(rl) = decode_specifics(e, keybag).and_then(|es| es.reading_list) else {
+            continue;
+        };
         if rl.url().is_empty() {
             continue;
         }
@@ -572,7 +593,10 @@ fn decrypt_reading_list(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<c
     out
 }
 
-fn decrypt_tab_groups(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<crate::model::LinkItem> {
+fn decrypt_tab_groups(
+    entries: &[proto::SyncEntity],
+    keybag: &KeyBag,
+) -> Vec<crate::model::LinkItem> {
     use std::collections::HashMap;
     // First pass: collect group names by guid; second pass: tabs under them.
     let mut group_name: HashMap<String, String> = HashMap::new();
@@ -581,7 +605,9 @@ fn decrypt_tab_groups(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<cra
         if e.deleted() {
             continue;
         }
-        let Some(stg) = decode_specifics(e, keybag).and_then(|es| es.saved_tab_group) else { continue };
+        let Some(stg) = decode_specifics(e, keybag).and_then(|es| es.saved_tab_group) else {
+            continue;
+        };
         if let Some(g) = &stg.group {
             group_name.insert(stg.guid().to_string(), g.title().to_string());
         } else if let Some(t) = &stg.tab {
@@ -607,7 +633,11 @@ fn decrypt_tab_groups(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<cra
     let mut groups: Vec<(&String, &String)> = group_name.iter().collect();
     groups.sort_by_key(|a| a.1.to_lowercase());
     for (guid, name) in groups {
-        let name = if name.is_empty() { "Unnamed group".to_string() } else { name.clone() };
+        let name = if name.is_empty() {
+            "Unnamed group".to_string()
+        } else {
+            name.clone()
+        };
         out.push(crate::model::LinkItem {
             id: format!("tggrp:{guid}"),
             title: name.clone(),
@@ -636,7 +666,9 @@ fn decrypt_sessions(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<crate
         if e.deleted() {
             continue;
         }
-        let Some(s) = decode_specifics(e, keybag).and_then(|es| es.session) else { continue };
+        let Some(s) = decode_specifics(e, keybag).and_then(|es| es.session) else {
+            continue;
+        };
         let tag = s.session_tag().to_string();
         if let Some(h) = &s.header {
             if !h.client_name().is_empty() {
@@ -666,7 +698,10 @@ fn decrypt_sessions(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<crate
     let mut by_dev: std::collections::HashMap<String, Vec<crate::model::LinkItem>> =
         std::collections::HashMap::new();
     for (tag, mut tab) in tabs {
-        let dev = device_of.get(&tag).cloned().unwrap_or_else(|| "This device".into());
+        let dev = device_of
+            .get(&tag)
+            .cloned()
+            .unwrap_or_else(|| "This device".into());
         tab.group = dev.clone();
         by_dev.entry(dev).or_default().push(tab);
     }
@@ -703,9 +738,10 @@ fn find_entity_by_guid(
         if e.deleted() {
             continue;
         }
-        let Some(specifics) = e.specifics.as_ref() else { continue };
-        let decoded = if let Some(blob) =
-            specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref())
+        let Some(specifics) = e.specifics.as_ref() else {
+            continue;
+        };
+        let decoded = if let Some(blob) = specifics.encrypted.as_ref().and_then(|d| d.blob.as_ref())
         {
             keybag
                 .decrypt(blob)
@@ -732,12 +768,14 @@ fn set_primary_note(data: &mut proto::PasswordSpecificsData, note: &str) {
     {
         n.value = Some(note.to_string());
     } else {
-        notes.note.push(proto::password_specifics_data::notes::Note {
-            unique_display_name: Some(String::new()),
-            value: Some(note.to_string()),
-            date_created_windows_epoch_micros: None,
-            hide_by_default: None,
-        });
+        notes
+            .note
+            .push(proto::password_specifics_data::notes::Note {
+                unique_display_name: Some(String::new()),
+                value: Some(note.to_string()),
+                date_created_windows_epoch_micros: None,
+                hide_by_default: None,
+            });
     }
 }
 
@@ -773,7 +811,11 @@ pub fn resolve_title(it: &PasswordItem) -> String {
     if trimmed.is_empty() || t.starts_with("android://") {
         // Last resort: raw host-ish piece of the realm.
         let realm = it.signon_realm.trim_matches('/');
-        if realm.is_empty() { "Untitled".to_string() } else { realm.to_string() }
+        if realm.is_empty() {
+            "Untitled".to_string()
+        } else {
+            realm.to_string()
+        }
     } else {
         t
     }

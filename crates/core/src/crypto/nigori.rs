@@ -51,12 +51,7 @@ impl Nigori {
             1003,
             &mut encryption_key,
         );
-        pbkdf2::pbkdf2_hmac::<sha1::Sha1>(
-            passphrase.as_bytes(),
-            &PBKDF2_SALT,
-            1004,
-            &mut mac_key,
-        );
+        pbkdf2::pbkdf2_hmac::<sha1::Sha1>(passphrase.as_bytes(), &PBKDF2_SALT, 1004, &mut mac_key);
         Nigori {
             encryption_key,
             mac_key,
@@ -166,7 +161,9 @@ impl Nigori {
 
     /// Decrypt a base64 Nigori blob to plaintext bytes.
     pub fn decrypt(&self, encrypted_b64: &str) -> Result<Vec<u8>, NigoriError> {
-        let buf = B64.decode(encrypted_b64.as_bytes()).map_err(|_| NigoriError::Base64)?;
+        let buf = B64
+            .decode(encrypted_b64.as_bytes())
+            .map_err(|_| NigoriError::Base64)?;
         if buf.len() < IV_SIZE + MAC_SIZE {
             return Err(NigoriError::TooShort);
         }

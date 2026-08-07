@@ -18,7 +18,7 @@ pub struct BookmarkItem {
 /// `group` labels which collection it belongs to (for grouped display).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LinkItem {
-    pub id: String,     // stable per-entry id
+    pub id: String, // stable per-entry id
     pub title: String,
     pub url: String,
     pub group: String,  // e.g. tab-group name, device name, or ""
@@ -50,10 +50,10 @@ impl BookmarkItem {
 pub struct DeviceItem {
     pub cache_guid: String,
     pub name: String,
-    pub form_factor: String,      // human label: Desktop / Phone / Tablet / …
-    pub os: String,               // human label: Windows / macOS / Linux / …
-    pub last_updated_unix: i64,   // seconds since epoch (0 if unknown)
-    pub is_current: bool,         // this device (our cache_guid)
+    pub form_factor: String,    // human label: Desktop / Phone / Tablet / …
+    pub os: String,             // human label: Windows / macOS / Linux / …
+    pub last_updated_unix: i64, // seconds since epoch (0 if unknown)
+    pub is_current: bool,       // this device (our cache_guid)
 }
 
 impl DeviceItem {
@@ -122,7 +122,12 @@ pub struct IdentityItem {
 impl IdentityItem {
     pub fn from_specifics(a: &proto::AutofillProfileSpecifics) -> Self {
         // Most name/email/phone fields are `repeated`; take the first non-empty.
-        let first = |v: &[String]| v.iter().find(|s| !s.is_empty()).cloned().unwrap_or_default();
+        let first = |v: &[String]| {
+            v.iter()
+                .find(|s| !s.is_empty())
+                .cloned()
+                .unwrap_or_default()
+        };
         let street = if !a.address_home_street_address().is_empty() {
             a.address_home_street_address().to_string()
         } else {
@@ -299,8 +304,7 @@ pub fn password_strength(pw: &str) -> (i32, &'static str) {
     let has_upper = pw.chars().any(|c| c.is_uppercase());
     let has_digit = pw.chars().any(|c| c.is_ascii_digit());
     let has_symbol = pw.chars().any(|c| !c.is_alphanumeric());
-    let classes =
-        has_lower as i32 + has_upper as i32 + has_digit as i32 + has_symbol as i32;
+    let classes = has_lower as i32 + has_upper as i32 + has_digit as i32 + has_symbol as i32;
 
     let mut score = 0i32;
     score += (len as i32 * 4).min(40);

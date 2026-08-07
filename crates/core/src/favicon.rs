@@ -46,7 +46,13 @@ pub fn mark_cache_current() {
 fn cache_key(host: &str) -> String {
     let safe: String = host
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     safe
 }
@@ -233,7 +239,10 @@ fn meta_content(html: &str, key: &str) -> Option<String> {
     let mut from = 0;
     while let Some(rel) = lower[from..].find("<meta") {
         let start = from + rel;
-        let end = lower[start..].find('>').map(|e| start + e).unwrap_or(lower.len());
+        let end = lower[start..]
+            .find('>')
+            .map(|e| start + e)
+            .unwrap_or(lower.len());
         let tag = &html[start..end];
         let tag_lower = &lower[start..end];
         from = end;
@@ -272,10 +281,28 @@ fn is_generic_segment(s: &str) -> bool {
     let pl = s.to_lowercase();
     let pl = pl.trim();
     const GENERIC: &[&str] = &[
-        "login", "log in", "sign in", "signin", "sign-in", "log on", "logon",
-        "home", "welcome", "account", "my account", "sign up", "signup",
-        "register", "authentication", "auth", "dashboard", "loading",
-        "please wait", "redirecting", "index", "untitled",
+        "login",
+        "log in",
+        "sign in",
+        "signin",
+        "sign-in",
+        "log on",
+        "logon",
+        "home",
+        "welcome",
+        "account",
+        "my account",
+        "sign up",
+        "signup",
+        "register",
+        "authentication",
+        "auth",
+        "dashboard",
+        "loading",
+        "please wait",
+        "redirecting",
+        "index",
+        "untitled",
     ];
     GENERIC.contains(&pl)
 }
@@ -384,7 +411,10 @@ fn parse_icon_hrefs(html: &str) -> Vec<String> {
     let mut others: Vec<String> = Vec::new();
     while let Some(rel) = lower[search_from..].find("<link") {
         let start = search_from + rel;
-        let end = lower[start..].find('>').map(|e| start + e).unwrap_or(lower.len());
+        let end = lower[start..]
+            .find('>')
+            .map(|e| start + e)
+            .unwrap_or(lower.len());
         let tag = &html[start..end];
         let tag_lower = &lower[start..end];
         search_from = end;
@@ -463,15 +493,28 @@ mod tests {
     use super::*;
     #[test]
     fn host_extraction() {
-        assert_eq!(host_of("https://discord.com/").as_deref(), Some("discord.com"));
-        assert_eq!(host_of("https://accounts.google.com/signin").as_deref(), Some("accounts.google.com"));
+        assert_eq!(
+            host_of("https://discord.com/").as_deref(),
+            Some("discord.com")
+        );
+        assert_eq!(
+            host_of("https://accounts.google.com/signin").as_deref(),
+            Some("accounts.google.com")
+        );
         assert_eq!(host_of("android://hash@com.foo/").as_deref(), None);
         assert_eq!(host_of("").as_deref(), None);
     }
     #[test]
     fn cache_key_matches() {
         assert_eq!(cache_key("discord.com"), "discord.com");
-        assert_eq!(cache_path("discord.com").file_name().unwrap().to_str().unwrap(), "discord.com.png");
+        assert_eq!(
+            cache_path("discord.com")
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "discord.com.png"
+        );
     }
 }
 
@@ -484,7 +527,10 @@ mod display_path_tests {
         let host = host_of("https://discord.com/").unwrap();
         assert_eq!(host, "discord.com");
         if cache_path(&host).exists() {
-            assert!(cached_data_uri(&host).is_some(), "cached png failed to load");
+            assert!(
+                cached_data_uri(&host).is_some(),
+                "cached png failed to load"
+            );
         } else {
             eprintln!("skip: no cached discord.com.png");
         }

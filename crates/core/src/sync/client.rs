@@ -249,14 +249,20 @@ impl SyncClient {
     }
 
     /// Convenience wrapper for the autofill profile (identities) data type.
-    pub fn fetch_all_identities(&self) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
+    pub fn fetch_all_identities(
+        &self,
+    ) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
         self.fetch_all(AUTOFILL_PROFILE_DATA_TYPE_ID)
     }
 
-    pub fn fetch_all_reading_list(&self) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
+    pub fn fetch_all_reading_list(
+        &self,
+    ) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
         self.fetch_all(READING_LIST_DATA_TYPE_ID)
     }
-    pub fn fetch_all_tab_groups(&self) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
+    pub fn fetch_all_tab_groups(
+        &self,
+    ) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {
         self.fetch_all(SAVED_TAB_GROUP_DATA_TYPE_ID)
     }
     pub fn fetch_all_sessions(&self) -> Result<(Vec<proto::SyncEntity>, Vec<Vec<u8>>), SyncError> {

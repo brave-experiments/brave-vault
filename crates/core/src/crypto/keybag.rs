@@ -121,7 +121,9 @@ pub fn build_keybag_custom_passphrase(
     let kdf = nigori.custom_passphrase_key_derivation_method();
     let passphrase_nigori = if kdf == 2 {
         let salt_b64 = nigori.custom_passphrase_key_derivation_salt();
-        let salt = B64.decode(salt_b64).map_err(|_| KeyBagError::KeybagFailed)?;
+        let salt = B64
+            .decode(salt_b64)
+            .map_err(|_| KeyBagError::KeybagFailed)?;
         Nigori::from_passphrase_scrypt(passphrase, &salt)
     } else {
         Nigori::from_passphrase_pbkdf2(passphrase)

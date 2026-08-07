@@ -17,9 +17,9 @@ use sha2::Sha512;
 /// 64-byte HKDF salt from brave_sync_auth_manager.cc:40-45.
 pub const HKDF_SALT: [u8; 64] = [
     72, 203, 156, 43, 64, 229, 225, 127, 214, 158, 50, 29, 130, 186, 182, 207, 6, 108, 47, 254,
-    245, 71, 198, 109, 44, 108, 32, 193, 221, 126, 119, 143, 112, 113, 87, 184, 239, 231, 230,
-    234, 28, 135, 54, 42, 9, 243, 39, 30, 179, 147, 194, 211, 212, 239, 225, 52, 192, 219, 145,
-    40, 95, 19, 142, 98,
+    245, 71, 198, 109, 44, 108, 32, 193, 221, 126, 119, 143, 112, 113, 87, 184, 239, 231, 230, 234,
+    28, 135, 54, 42, 9, 243, 39, 30, 179, 147, 194, 211, 212, 239, 225, 52, 192, 219, 145, 40, 95,
+    19, 142, 98,
 ];
 
 const INFO: &[u8] = b"sync-auth-key";
@@ -33,7 +33,8 @@ impl SyncKeys {
     pub fn from_seed(seed32: &[u8]) -> Self {
         let hk = Hkdf::<Sha512>::new(Some(&HKDF_SALT), seed32);
         let mut okm = [0u8; 32];
-        hk.expand(INFO, &mut okm).expect("32 is a valid HKDF length");
+        hk.expand(INFO, &mut okm)
+            .expect("32 is a valid HKDF length");
         let signing = SigningKey::from_bytes(&okm);
         SyncKeys { signing }
     }
@@ -98,9 +99,8 @@ mod tests {
     fn matches_brave_known_vector() {
         // From brave crypto_unittest.cc CryptoTest.Ed25519KeyDerivation.
         // seed hex, info = single 0x00 byte, salt = HKDF_SALT.
-        let seed =
-            hex::decode("5bb5ceb168e4c8e26a1a16ed34d9fc7fe92c1481579338da362cb8d9f925d7cb")
-                .unwrap();
+        let seed = hex::decode("5bb5ceb168e4c8e26a1a16ed34d9fc7fe92c1481579338da362cb8d9f925d7cb")
+            .unwrap();
         let hk = Hkdf::<Sha512>::new(Some(&HKDF_SALT), &seed);
         let mut okm = [0u8; 32];
         hk.expand(&[0u8], &mut okm).unwrap();

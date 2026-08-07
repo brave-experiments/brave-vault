@@ -13,7 +13,10 @@ const AMBIGUOUS: &[u8] = b"0O1lI";
 
 fn filter_ambiguous(set: &[u8], avoid: bool) -> Vec<u8> {
     if avoid {
-        set.iter().copied().filter(|c| !AMBIGUOUS.contains(c)).collect()
+        set.iter()
+            .copied()
+            .filter(|c| !AMBIGUOUS.contains(c))
+            .collect()
     } else {
         set.to_vec()
     }

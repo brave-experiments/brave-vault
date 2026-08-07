@@ -46,7 +46,10 @@ fn cmd_probe(arg: Option<String>) -> Result<()> {
     };
     let phrase = time_words::parse(&raw).map_err(anyhow::Error::msg)?;
     let session = Session::new(cfg, phrase);
-    println!("client id: {}", session.client_id().map_err(anyhow::Error::msg)?);
+    println!(
+        "client id: {}",
+        session.client_id().map_err(anyhow::Error::msg)?
+    );
     let data = session.fetch_all().map_err(anyhow::Error::msg)?;
     println!(
         "passwords: {}, bookmarks: {}, identities: {}, reading_list: {}, tab_groups: {}, open_tabs: {}, devices: {}",
@@ -63,7 +66,11 @@ fn cmd_probe(arg: Option<String>) -> Result<()> {
             "  device: {} [{} · {}]{}",
             d.name,
             if d.os.is_empty() { "?" } else { &d.os },
-            if d.form_factor.is_empty() { "?" } else { &d.form_factor },
+            if d.form_factor.is_empty() {
+                "?"
+            } else {
+                &d.form_factor
+            },
             if d.is_current { " (this device)" } else { "" },
         );
     }
@@ -75,22 +82,43 @@ fn cmd_probe(arg: Option<String>) -> Result<()> {
             *val_counts.entry(r.item.password.as_str()).or_insert(0) += 1;
         }
     }
-    let weak = data.passwords.iter().filter(|r| {
-        !r.item.password.is_empty()
-            && brave_vault_core::model::password_strength(&r.item.password).0 < 40
-    }).count();
-    let reused = data.passwords.iter().filter(|r| {
-        !r.item.password.is_empty() && val_counts.get(r.item.password.as_str()).copied().unwrap_or(0) > 1
-    }).count();
+    let weak = data
+        .passwords
+        .iter()
+        .filter(|r| {
+            !r.item.password.is_empty()
+                && brave_vault_core::model::password_strength(&r.item.password).0 < 40
+        })
+        .count();
+    let reused = data
+        .passwords
+        .iter()
+        .filter(|r| {
+            !r.item.password.is_empty()
+                && val_counts
+                    .get(r.item.password.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+        })
+        .count();
     let mut groups: HashMap<(String, String), HashSet<String>> = HashMap::new();
     for r in &data.passwords {
-        groups.entry((r.item.signon_realm.clone(), r.item.username.clone()))
-            .or_default().insert(r.item.password.clone());
+        groups
+            .entry((r.item.signon_realm.clone(), r.item.username.clone()))
+            .or_default()
+            .insert(r.item.password.clone());
     }
-    let conflicts = data.passwords.iter().filter(|r| {
-        groups.get(&(r.item.signon_realm.clone(), r.item.username.clone()))
-            .map(|s| s.len() > 1).unwrap_or(false)
-    }).count();
+    let conflicts = data
+        .passwords
+        .iter()
+        .filter(|r| {
+            groups
+                .get(&(r.item.signon_realm.clone(), r.item.username.clone()))
+                .map(|s| s.len() > 1)
+                .unwrap_or(false)
+        })
+        .count();
     println!("weak: {weak}, reused: {reused}, conflicts: {conflicts}");
     for id in &data.identities {
         println!("  identity: {} | {}", id.title(), id.summary());
@@ -110,7 +138,9 @@ fn cmd_testbm() -> Result<()> {
     let url = format!("https://brave-vault-test-{stamp}.example.com/");
     let title = format!("Brave Vault Test {stamp}");
     println!("committing bookmark: {title}");
-    session.commit_new_bookmark(&title, &url, "").map_err(anyhow::Error::msg)?;
+    session
+        .commit_new_bookmark(&title, &url, "")
+        .map_err(anyhow::Error::msg)?;
     println!("committed; re-fetching…");
     let data = session.fetch_all().map_err(anyhow::Error::msg)?;
     let found = data.bookmarks.iter().any(|b| b.url == url);
@@ -137,7 +167,9 @@ fn cmd_testid() -> Result<()> {
         ..Default::default()
     };
     println!("committing identity: {name}");
-    session.commit_new_identity(&it).map_err(anyhow::Error::msg)?;
+    session
+        .commit_new_identity(&it)
+        .map_err(anyhow::Error::msg)?;
     println!("committed; re-fetching…");
     let data = session.fetch_all().map_err(anyhow::Error::msg)?;
     let found = data.identities.iter().any(|i| i.name == name);
@@ -152,24 +184,48 @@ fn cmd_cleanup() -> Result<()> {
     let phrase = load_vault_mnemonic().context("no saved vault")?;
     let session = Session::new(cfg, phrase);
     let data = session.fetch_all().map_err(anyhow::Error::msg)?;
-    for b in data.bookmarks.iter().filter(|b| b.url.contains("brave-vault-test-")) {
+    for b in data
+        .bookmarks
+        .iter()
+        .filter(|b| b.url.contains("brave-vault-test-"))
+    {
         println!("deleting bookmark {}", b.title);
-        session.commit_delete_bookmark(&b.guid).map_err(anyhow::Error::msg)?;
+        session
+            .commit_delete_bookmark(&b.guid)
+            .map_err(anyhow::Error::msg)?;
     }
-    for i in data.identities.iter().filter(|i| i.name.starts_with("Test Person ")) {
+    for i in data
+        .identities
+        .iter()
+        .filter(|i| i.name.starts_with("Test Person "))
+    {
         println!("deleting identity {}", i.name);
-        session.commit_delete_identity(&i.guid).map_err(anyhow::Error::msg)?;
+        session
+            .commit_delete_identity(&i.guid)
+            .map_err(anyhow::Error::msg)?;
     }
     let after = session.fetch_all().map_err(anyhow::Error::msg)?;
-    let bm_left = after.bookmarks.iter().filter(|b| b.url.contains("brave-vault-test-")).count();
-    let id_left = after.identities.iter().filter(|i| i.name.starts_with("Test Person ")).count();
+    let bm_left = after
+        .bookmarks
+        .iter()
+        .filter(|b| b.url.contains("brave-vault-test-"))
+        .count();
+    let id_left = after
+        .identities
+        .iter()
+        .filter(|i| i.name.starts_with("Test Person "))
+        .count();
     println!("remaining test bookmarks: {bm_left}, test identities: {id_left}");
     Ok(())
 }
 
 fn load_vault_mnemonic() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".brave_pw").join("vault.json");
+    let path = std::path::Path::new(&home)
+        .join(".brave_pw")
+        .join("vault.json");
     let contents = std::fs::read_to_string(path).ok()?;
-    brave_vault_core::vault::open("testing", &contents).ok()?.mnemonic
+    brave_vault_core::vault::open("testing", &contents)
+        .ok()?
+        .mnemonic
 }
