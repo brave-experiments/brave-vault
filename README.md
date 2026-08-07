@@ -37,3 +37,24 @@ make windows    # NSIS installer (cross-compiled via cargo-xwin)
 make linux      # .deb + .rpm (via Docker)
 make all        # all three
 ```
+
+## Agent access
+
+Give an agent access to vault items without handing it the vault. The agent
+runs `brave-vault-agent`, which talks to the running app over a local socket.
+It never holds the vault secret — only a handle that lets it ask.
+
+```sh
+brave-vault-agent enroll --label "my agent"   # you confirm a popup in the app
+brave-vault-agent request --item example.com --action reveal
+brave-vault-agent reveal --grant <id>          # copies the password to clipboard
+```
+
+- Each request pops up in the app for approval, unless you pre-authorized it in
+  the app's **Agents** panel.
+- Access is per-item, single-use, and expires. Revoke any agent or grant from
+  the Agents panel.
+- `--action use` asks the app to open the site and fill the password itself, so
+  the agent never sees it.
+
+See `docs/agent-access-plan.md` for the design.
