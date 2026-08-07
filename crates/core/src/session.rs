@@ -195,6 +195,9 @@ impl Session {
     }
 
     /// Commit a brand-new password.
+    // Fields are set incrementally (some conditionally / via a helper), so a
+    // single struct-literal initializer doesn't fit cleanly.
+    #[allow(clippy::field_reassign_with_default)]
     pub fn commit_new(&self, fields: &EditFields) -> Result<(), String> {
         let client = self.client()?;
         let keybag = self.build_keybag(&client)?;
@@ -241,6 +244,9 @@ impl Session {
     }
 
     /// Create a brand-new identity (autofill profile).
+    // Fields are set conditionally on non-empty inputs, so incremental
+    // assignment reads clearer than a large struct literal.
+    #[allow(clippy::field_reassign_with_default)]
     pub fn commit_new_identity(&self, it: &IdentityItem) -> Result<(), String> {
         let client = self.client()?;
         let keybag = self.build_keybag(&client)?;
@@ -499,7 +505,7 @@ fn decrypt_identities(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<Ide
         }
         out.push(item);
     }
-    out.sort_by(|a, b| a.title().to_lowercase().cmp(&b.title().to_lowercase()));
+    out.sort_by_key(|a| a.title().to_lowercase());
     out
 }
 
@@ -562,7 +568,7 @@ fn decrypt_reading_list(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<c
             is_group: false,
         });
     }
-    out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    out.sort_by_key(|a| a.title.to_lowercase());
     out
 }
 
@@ -599,7 +605,7 @@ fn decrypt_tab_groups(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<cra
     }
     let mut out = Vec::new();
     let mut groups: Vec<(&String, &String)> = group_name.iter().collect();
-    groups.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    groups.sort_by_key(|a| a.1.to_lowercase());
     for (guid, name) in groups {
         let name = if name.is_empty() { "Unnamed group".to_string() } else { name.clone() };
         out.push(crate::model::LinkItem {
@@ -611,7 +617,7 @@ fn decrypt_tab_groups(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<cra
         });
         if let Some(list) = by_group.get(guid) {
             let mut list = list.clone();
-            list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            list.sort_by_key(|a| a.title.to_lowercase());
             for mut t in list {
                 t.group = name.clone();
                 out.push(t);
@@ -677,7 +683,7 @@ fn decrypt_sessions(entries: &[proto::SyncEntity], keybag: &KeyBag) -> Vec<crate
         });
         if let Some(list) = by_dev.get(dev) {
             let mut list = list.clone();
-            list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            list.sort_by_key(|a| a.title.to_lowercase());
             out.extend(list);
         }
     }

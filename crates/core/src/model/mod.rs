@@ -80,7 +80,7 @@ fn form_factor_label(form_factor: i32, device_type: i32) -> String {
         6 => "TV",
         _ => match device_type {
             // Legacy SyncEnums.DeviceType (deprecated but still populated).
-            1 | 2 | 3 | 4 => "Desktop", // Win / Mac / Linux / CrOS
+            1..=4 => "Desktop", // Win / Mac / Linux / CrOS
             6 => "Phone",
             7 => "Tablet",
             _ => "Device",

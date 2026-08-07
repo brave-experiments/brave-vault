@@ -226,7 +226,7 @@ impl SyncClient {
                 eprintln!(
                     "  [poll {poll}] type={data_type_id} got={got} remaining={} token={} birthday={}",
                     batch.changes_remaining,
-                    token.as_ref().map(|t| hex::encode(t)).unwrap_or_default(),
+                    token.as_ref().map(hex::encode).unwrap_or_default(),
                     birthday.as_deref().unwrap_or("")
                 );
             }

@@ -71,7 +71,7 @@ pub fn host_of(url: &str) -> Option<String> {
         return None;
     }
     let host = rest.split('/').next().unwrap_or(rest);
-    let host = host.split('@').last().unwrap_or(host); // strip userinfo
+    let host = host.split('@').next_back().unwrap_or(host); // strip userinfo
     let host = host.split(':').next().unwrap_or(host); // strip port
     if host.is_empty() || !host.contains('.') {
         return None;
@@ -277,7 +277,7 @@ fn is_generic_segment(s: &str) -> bool {
         "register", "authentication", "auth", "dashboard", "loading",
         "please wait", "redirecting", "index", "untitled",
     ];
-    GENERIC.iter().any(|g| pl == *g)
+    GENERIC.contains(&pl)
 }
 
 /// Clean a raw title into a brand-ish name, or None to fall back to the domain.
