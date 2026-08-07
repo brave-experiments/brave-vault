@@ -8,6 +8,7 @@ import Icon from "@brave/leo/react/icon";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const clipboard = window.__TAURI__.clipboardManager;
+const tauriEvent = window.__TAURI__.event;
 
 // ---------- Tauri helpers ----------
 async function copyText(text, what, setToast) {
@@ -31,6 +32,7 @@ const NAV = [
   { view: "tabgroups", label: "Tab Groups", icon: "browser-group" },
   { view: "opentabs", label: "Open Tabs", icon: "window-tabs" },
   { view: "devices", label: "Devices", icon: "laptop" },
+  { view: "agents", label: "Agents", icon: "user" },
 ];
 
 const PALETTE = ["#e06c75","#98c379","#61afef","#c678dd","#e5c07b","#56b6c2","#d19a66","#be5046","#7e57c2","#26a69a"];
@@ -51,6 +53,22 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(""), 1800);
   }, []);
 
+  // Live agent approval requests from the broker (queue; show one at a time).
+  const [approvals, setApprovals] = useState([]);
+  useEffect(() => {
+    if (!tauriEvent?.listen) return;
+    let unlisten;
+    tauriEvent.listen("agent://approval-request", (e) => {
+      setApprovals((q) => [...q, e.payload]);
+    }).then((f) => { unlisten = f; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+  const answerApproval = useCallback(async (request_id, approved, ttl_secs, max_uses) => {
+    try { await invoke("agent_respond", { requestId: request_id, approved, ttlSecs: ttl_secs, maxUses: max_uses }); }
+    catch { /* broker may have timed out */ }
+    setApprovals((q) => q.filter((a) => a.request_id !== request_id));
+  }, []);
+
   return (
     <>
       <div className="titlebar-drag" data-tauri-drag-region />
@@ -58,7 +76,47 @@ export default function App() {
       {screen === "setup" && <Setup setScreen={setScreen} />}
       {screen === "main" && <Main setScreen={setScreen} showToast={showToast} />}
       {toast && <div className="toast">{toast}</div>}
+      {approvals.length > 0 && (
+        <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />
+      )}
     </>
+  );
+}
+
+// ---------- Agent approval popup ----------
+function ApprovalModal({ req, onAnswer }) {
+  const [ttl, setTtl] = useState("60");
+  const [uses, setUses] = useState("1");
+  return (
+    <div className="approval-backdrop">
+      <div className="approval-card">
+        <h3>Agent access request</h3>
+        <p className="approval-msg">{req.message}</p>
+        {req.reason ? <p className="muted approval-reason">Reason: {req.reason}</p> : null}
+        <div className="approval-opts">
+          <label>Expires in
+            <Dropdown className="mini" value={ttl} onChange={(e) => setTtl(e.value)}>
+              <span slot="value">{{ "60": "1 minute", "300": "5 minutes", "900": "15 minutes" }[ttl] || ttl + "s"}</span>
+              <leo-option value="60">1 minute</leo-option>
+              <leo-option value="300">5 minutes</leo-option>
+              <leo-option value="900">15 minutes</leo-option>
+            </Dropdown>
+          </label>
+          <label>Max uses
+            <Dropdown className="mini" value={uses} onChange={(e) => setUses(e.value)}>
+              <span slot="value">{uses}</span>
+              <leo-option value="1">1</leo-option>
+              <leo-option value="5">5</leo-option>
+              <leo-option value="25">25</leo-option>
+            </Dropdown>
+          </label>
+        </div>
+        <div className="approval-actions">
+          <Button kind="outline" onClick={() => onAnswer(req.request_id, false, 0, 0)}>Deny</Button>
+          <Button onClick={() => onAnswer(req.request_id, true, Number(ttl), Number(uses))}>Allow</Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -190,6 +248,7 @@ function Main({ setScreen, showToast }) {
   const refresh = useCallback(async (opts = {}) => {
     const v = opts.view ?? view, q = opts.query ?? query, s = opts.sort ?? sort;
     const f = opts.filter ?? filter, fol = opts.folder ?? folder;
+    if (v === "agents") { setItems([]); return; } // agents view manages its own data
     const seq = ++reqSeq.current;
     const t = setTimeout(() => { if (seq === reqSeq.current) setLoading(true); }, 120);
     const rows = await invoke("list_items", { view: v, query: q, folder: fol, sort: s, filter: f });
@@ -414,6 +473,10 @@ function Main({ setScreen, showToast }) {
 
       <div className="resizer" onMouseDown={startDrag(1)} />
 
+      {view === "agents" ? (
+        <AgentsPanel showToast={showToast} />
+      ) : (
+      <>
       {/* List column */}
       <div className="list-col">
         <div className="list-header">
@@ -493,6 +556,8 @@ function Main({ setScreen, showToast }) {
               onSelect={(it) => setSelected(it)} />
           : <div className="detail-empty muted">Select an item</div>}
       </div>
+      </>
+      )}
 
       {ctx && (
         <div className="ctx-menu" style={{ left: ctx.x, top: ctx.y }}>
@@ -513,6 +578,143 @@ function duplicate(item, view, setEditing) {
     for (const line of (item.notes || "").split("\n")) { const i = line.indexOf(": "); if (i > 0) f[line.slice(0, i).toLowerCase()] = line.slice(i + 2); }
     setEditing({ mode: "newidentity", prefill: { ...f, name: (f.name || "") + " (copy)" } });
   }
+}
+
+// ---------- Agents panel ----------
+function fmtTime(unix) {
+  if (!unix) return "—";
+  try { return new Date(unix * 1000).toLocaleString(); } catch { return String(unix); }
+}
+
+function AgentsPanel({ showToast }) {
+  const [handles, setHandles] = useState([]);
+  const [grants, setGrants] = useState([]);
+  const [audit, setAudit] = useState([]);
+  const [pcHandle, setPcHandle] = useState("");
+  const [pcItem, setPcItem] = useState("");
+  const [pcAction, setPcAction] = useState("reveal");
+  const [pcTtl, setPcTtl] = useState("3600");
+  const [pcUses, setPcUses] = useState("5");
+
+  const reload = useCallback(async () => {
+    try {
+      const [h, g, a] = await Promise.all([
+        invoke("agent_list_handles"),
+        invoke("agent_list_grants"),
+        invoke("agent_audit_log", { limit: 100 }),
+      ]);
+      setHandles(h); setGrants(g); setAudit(a);
+      if (!pcHandle && h.length) setPcHandle(h[0].handle_id);
+    } catch (e) { showToast("Load failed: " + e); }
+  }, [pcHandle, showToast]);
+
+  useEffect(() => { reload(); const t = setInterval(reload, 4000); return () => clearInterval(t); }, [reload]);
+
+  const revokeHandle = async (id) => {
+    try { await invoke("agent_revoke_handle", { handleId: id }); showToast("Handle revoked"); reload(); }
+    catch (e) { showToast("Revoke failed: " + e); }
+  };
+  const revokeGrant = async (id) => {
+    try { await invoke("agent_revoke_grant", { grantId: id }); showToast("Grant revoked"); reload(); }
+    catch (e) { showToast("Revoke failed: " + e); }
+  };
+  const preCreate = async () => {
+    if (!pcHandle || !pcItem.trim()) { showToast("Pick a handle and item"); return; }
+    try {
+      await invoke("agent_precreate_grant", {
+        handleId: pcHandle, item: pcItem.trim(), action: pcAction,
+        ttlSecs: Number(pcTtl), maxUses: Number(pcUses),
+      });
+      showToast("Grant pre-created"); setPcItem(""); reload();
+    } catch (e) { showToast("Failed: " + e); }
+  };
+
+  return (
+    <div className="agents-panel">
+      <div className="agents-scroll">
+        <section className="agents-sec">
+          <h2>Enrolled agents</h2>
+          <p className="muted">An agent enrolls itself once via <code>brave-vault-agent enroll</code> (you confirm the popup). It never holds a vault secret — only a handle that lets it ask.</p>
+          {handles.length === 0 && <div className="muted empty-row">No agents enrolled yet.</div>}
+          {handles.map((h) => (
+            <div key={h.handle_id} className="agent-row">
+              <div>
+                <div className="agent-label">{h.label}</div>
+                <div className="muted mono small">{h.handle_id}</div>
+                <div className="muted small">Created {fmtTime(h.created_unix)} · Last used {fmtTime(h.last_used_unix)}</div>
+              </div>
+              <Button size="small" kind="outline" onClick={() => revokeHandle(h.handle_id)}>Revoke</Button>
+            </div>
+          ))}
+        </section>
+
+        <section className="agents-sec">
+          <h2>Pre-create a grant</h2>
+          <p className="muted">Authorize an item ahead of time so the agent can use it without a live prompt. Every use is still audited.</p>
+          <div className="pc-form">
+            <label>Agent
+              <Dropdown className="mini" value={pcHandle} onChange={(e) => setPcHandle(e.value)}>
+                <span slot="value">{handles.find((h) => h.handle_id === pcHandle)?.label || "Select"}</span>
+                {handles.map((h) => <leo-option key={h.handle_id} value={h.handle_id}>{h.label}</leo-option>)}
+              </Dropdown>
+            </label>
+            <Input className="pc-item" placeholder="Item (e.g. example.com)" value={pcItem} onInput={(e) => setPcItem(e.value)} />
+            <label>Action
+              <Dropdown className="mini" value={pcAction} onChange={(e) => setPcAction(e.value)}>
+                <span slot="value">{pcAction === "use" ? "Use (never reveal)" : "Reveal"}</span>
+                <leo-option value="reveal">Reveal</leo-option>
+                <leo-option value="use">Use (never reveal)</leo-option>
+              </Dropdown>
+            </label>
+            <label>Window
+              <Dropdown className="mini" value={pcTtl} onChange={(e) => setPcTtl(e.value)}>
+                <span slot="value">{{ "3600": "1 hour", "86400": "24 hours", "604800": "7 days" }[pcTtl] || pcTtl + "s"}</span>
+                <leo-option value="3600">1 hour</leo-option>
+                <leo-option value="86400">24 hours</leo-option>
+                <leo-option value="604800">7 days</leo-option>
+              </Dropdown>
+            </label>
+            <label>Max uses
+              <Dropdown className="mini" value={pcUses} onChange={(e) => setPcUses(e.value)}>
+                <span slot="value">{pcUses}</span>
+                <leo-option value="1">1</leo-option>
+                <leo-option value="5">5</leo-option>
+                <leo-option value="25">25</leo-option>
+                <leo-option value="100">100</leo-option>
+              </Dropdown>
+            </label>
+            <Button size="small" onClick={preCreate}>Create grant</Button>
+          </div>
+        </section>
+
+        <section className="agents-sec">
+          <h2>Live grants</h2>
+          {grants.length === 0 && <div className="muted empty-row">No live grants.</div>}
+          {grants.map((g) => (
+            <div key={g.grant_id} className="agent-row">
+              <div>
+                <div className="mono small">{g.scope.join(", ")}</div>
+                <div className="muted small">{g.action} · {g.uses_remaining} use(s) left · expires {fmtTime(g.expires_unix)} · {g.approved_by}</div>
+              </div>
+              <Button size="small" kind="outline" onClick={() => revokeGrant(g.grant_id)}>Revoke</Button>
+            </div>
+          ))}
+        </section>
+
+        <section className="agents-sec">
+          <h2>Audit log</h2>
+          {audit.length === 0 && <div className="muted empty-row">No activity yet.</div>}
+          {audit.map((a, i) => (
+            <div key={i} className="audit-row">
+              <span className={"audit-badge audit-" + a.event}>{a.event}</span>
+              <span className="audit-when muted small">{fmtTime(a.at_unix)}</span>
+              <span className="audit-what small">{a.handle_label || a.handle_id}{a.item_id ? " → " + a.item_id : ""}{a.detail ? " (" + a.detail + ")" : ""}</span>
+            </div>
+          ))}
+        </section>
+      </div>
+    </div>
+  );
 }
 
 // ---------- Avatar ----------
