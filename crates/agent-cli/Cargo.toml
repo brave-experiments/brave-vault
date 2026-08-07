@@ -1,0 +1,18 @@
+[package]
+name = "brave_vault_agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "brave-vault-agent"
+path = "src/main.rs"
+
+[dependencies]
+brave_vault_core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# OS keychain for the handle secret (macOS Keychain / Windows Credential
+# Manager / libsecret). apple-native + windows-native + sync-secret-service
+# so no async runtime is pulled in.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
