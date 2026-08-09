@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Result};
 use brave_vault_core::agent::auth;
 use brave_vault_core::agent::client::Broker;
 use brave_vault_core::agent::model::Action;
-use brave_vault_core::agent::protocol::{Request, Response};
+use brave_vault_core::agent::protocol::{Request, Response, Via};
 
 fn main() {
     if let Err(e) = run() {
@@ -58,12 +58,14 @@ USAGE:
   brave-vault-agent ping
   brave-vault-agent request --item <q> --action reveal|use [--reason <text>]
   brave-vault-agent reveal --grant <id> [--print | --json]
-  brave-vault-agent use --grant <id> [--target <url>]
+  brave-vault-agent use --grant <id> [--target <url>] [--via inject|clipboard]
   brave-vault-agent list-grants
 
 The agent holds only a handle; it never holds the vault master secret. A
 'reveal' returns one item once; a 'use' asks the app to perform the action so
-the secret never reaches this process."
+the secret never reaches this process. 'use' defaults to --via inject (the app
+fills the login form via its browser extension); --via clipboard is an explicit
+opt-in that copies the password to the clipboard (readable by other local apps)."
     );
 }
 
@@ -311,6 +313,11 @@ fn copy_to_clipboard(value: &str) -> Result<()> {
 fn cmd_use(args: &[String]) -> Result<()> {
     let grant_id = flag(args, "--grant").ok_or_else(|| anyhow!("--grant is required"))?;
     let target = flag(args, "--target").unwrap_or("").to_string();
+    let via = match flag(args, "--via").unwrap_or("inject") {
+        "inject" => Via::Inject,
+        "clipboard" => Via::Clipboard,
+        other => bail!("--via must be 'inject' or 'clipboard' (got '{other}')"),
+    };
 
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
@@ -319,6 +326,7 @@ fn cmd_use(args: &[String]) -> Result<()> {
             grant_id: grant_id.to_string(),
             proof,
             target,
+            via,
         })
         .map_err(|e| anyhow!(e))?;
     match resp {
