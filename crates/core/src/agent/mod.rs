@@ -13,6 +13,7 @@
 //! - [`resolve`] — mapping a human item string to a concrete item id.
 
 pub mod auth;
+pub mod client;
 pub mod model;
 pub mod protocol;
 pub mod resolve;

@@ -14,15 +14,13 @@
 //! - `use` asks the broker to *perform* the action so the plaintext never
 //!   reaches this process at all.
 
-mod client;
 mod store;
 
 use anyhow::{anyhow, bail, Result};
 use brave_vault_core::agent::auth;
+use brave_vault_core::agent::client::Broker;
 use brave_vault_core::agent::model::Action;
 use brave_vault_core::agent::protocol::{Request, Response};
-
-use client::Broker;
 
 fn main() {
     if let Err(e) = run() {
@@ -85,23 +83,27 @@ fn has_flag(args: &[String], name: &str) -> bool {
 fn connect_authed() -> Result<(Broker, String)> {
     let handle_id = store::current_handle_id()
         .ok_or_else(|| anyhow!("no enrolled handle; run `brave-vault-agent enroll` first"))?;
-    let mut broker = Broker::connect()?;
-    broker.hello(&handle_id)?;
+    let mut broker = Broker::connect().map_err(|e| anyhow!(e))?;
+    broker.hello(&handle_id).map_err(|e| anyhow!(e))?;
     Ok((broker, handle_id))
 }
 
 /// Compute the HMAC proof for the current connection nonce.
 fn proof_for(broker: &Broker, handle_id: &str) -> Result<String> {
     let secret = store::secret_for(handle_id)?;
-    Ok(auth::compute_proof(&secret, broker.nonce()?))
+    let nonce = broker.nonce().map_err(|e| anyhow!(e))?;
+    Ok(auth::compute_proof(&secret, nonce))
 }
 
 fn cmd_enroll(args: &[String]) -> Result<()> {
     let label = flag(args, "--label").unwrap_or("agent").to_string();
-    let mut broker = Broker::connect()?;
-    match broker.call(&Request::Enroll {
-        label: label.clone(),
-    })? {
+    let mut broker = Broker::connect().map_err(|e| anyhow!(e))?;
+    match broker
+        .call(&Request::Enroll {
+            label: label.clone(),
+        })
+        .map_err(|e| anyhow!(e))?
+    {
         Response::Enrolled { handle_id, secret } => {
             store::save_handle(&handle_id, &secret, &label)?;
             // Print only the id (safe); the secret is now in the keychain.
@@ -130,13 +132,13 @@ fn cmd_whoami() -> Result<()> {
 }
 
 fn cmd_ping() -> Result<()> {
-    let mut broker = Broker::connect()?;
+    let mut broker = Broker::connect().map_err(|e| anyhow!(e))?;
     // HELLO needs a handle; ping is fine unauthenticated if enrolled, but also
     // works pre-enrollment by sending PING directly.
     if let Some(id) = store::current_handle_id() {
-        broker.hello(&id)?;
+        broker.hello(&id).map_err(|e| anyhow!(e))?;
     }
-    match broker.call(&Request::Ping)? {
+    match broker.call(&Request::Ping).map_err(|e| anyhow!(e))? {
         Response::Pong => {
             println!("broker: ok");
             Ok(())
@@ -161,13 +163,15 @@ fn cmd_request(args: &[String]) -> Result<()> {
 
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
-    let resp = broker.call(&Request::Request {
-        handle_id,
-        proof,
-        item: item.to_string(),
-        action,
-        reason,
-    })?;
+    let resp = broker
+        .call(&Request::Request {
+            handle_id,
+            proof,
+            item: item.to_string(),
+            action,
+            reason,
+        })
+        .map_err(|e| anyhow!(e))?;
     match resp {
         Response::Grant { grant_id, ttl_secs } => {
             println!("{grant_id}");
@@ -193,10 +197,12 @@ fn cmd_reveal(args: &[String]) -> Result<()> {
 
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
-    let resp = broker.call(&Request::Consume {
-        grant_id: grant_id.to_string(),
-        proof,
-    })?;
+    let resp = broker
+        .call(&Request::Consume {
+            grant_id: grant_id.to_string(),
+            proof,
+        })
+        .map_err(|e| anyhow!(e))?;
     match resp {
         Response::Secret { item } => {
             deliver_secret(&item, print, json)?;
@@ -308,11 +314,13 @@ fn cmd_use(args: &[String]) -> Result<()> {
 
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
-    let resp = broker.call(&Request::Perform {
-        grant_id: grant_id.to_string(),
-        proof,
-        target,
-    })?;
+    let resp = broker
+        .call(&Request::Perform {
+            grant_id: grant_id.to_string(),
+            proof,
+            target,
+        })
+        .map_err(|e| anyhow!(e))?;
     match resp {
         Response::Done { ok, detail } => {
             if ok {
@@ -331,7 +339,9 @@ fn cmd_use(args: &[String]) -> Result<()> {
 fn cmd_list_grants() -> Result<()> {
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
-    let resp = broker.call(&Request::ListGrants { handle_id, proof })?;
+    let resp = broker
+        .call(&Request::ListGrants { handle_id, proof })
+        .map_err(|e| anyhow!(e))?;
     match resp {
         Response::Grants { grants } => {
             if grants.is_empty() {

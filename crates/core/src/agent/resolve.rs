@@ -25,6 +25,38 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
+/// The origin (`scheme://host[:port]`) of a URL, lower-cased, for origin-binding
+/// checks. Returns "" if there's no host. Deliberately strict: a credential
+/// stored for `https://admin.example.com` must not match `https://api-admin.
+/// example.com` — the host comparison is exact, so lookalike domains differ.
+pub fn origin_of(url: &str) -> String {
+    let url = url.trim();
+    // Split scheme.
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_lowercase(), r),
+        None => return String::new(),
+    };
+    // Authority ends at the first '/', '?' or '#'.
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    // Drop any userinfo ("user:pass@host").
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    if hostport.is_empty() {
+        return String::new();
+    }
+    format!("{scheme}://{hostport}")
+}
+
+/// Whether two URLs share the same origin. Used to bind an injection to the
+/// credential's own site.
+pub fn same_origin(a: &str, b: &str) -> bool {
+    let oa = origin_of(a);
+    !oa.is_empty() && oa == origin_of(b)
+}
+
 /// Find all items matching `query` across the given collections. A password
 /// matches on realm/origin/username/title; an identity on name/email; a
 /// bookmark on title/url. Case-insensitive substring match.
@@ -178,5 +210,37 @@ mod tests {
     fn empty_query_matches_nothing() {
         let pws = vec![pw("https://example.com/", "alice")];
         assert!(resolve("  ", &pws, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn origin_extracts_scheme_host_port() {
+        assert_eq!(
+            origin_of("https://example.com/login"),
+            "https://example.com"
+        );
+        assert_eq!(
+            origin_of("https://example.com:8443/x"),
+            "https://example.com:8443"
+        );
+        assert_eq!(origin_of("http://a.b.com/p?q=1#f"), "http://a.b.com");
+        assert_eq!(origin_of("https://user:pw@host.com/x"), "https://host.com");
+        assert_eq!(origin_of("HTTPS://Example.COM/X"), "https://example.com");
+        assert_eq!(origin_of("not a url"), "");
+        assert_eq!(origin_of(""), "");
+    }
+
+    #[test]
+    fn lookalike_hosts_are_different_origins() {
+        // A lookalike-domain prefix (admin vs api-admin) must NOT match.
+        assert!(!same_origin(
+            "https://admin.example.com/login",
+            "https://api-admin.example.com/login"
+        ));
+        assert!(same_origin(
+            "https://admin.example.com/login",
+            "https://admin.example.com/account"
+        ));
+        // Scheme mismatch is a different origin too.
+        assert!(!same_origin("http://x.com/", "https://x.com/"));
     }
 }

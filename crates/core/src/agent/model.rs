@@ -18,6 +18,19 @@ pub enum Action {
     Use,
 }
 
+/// What kind of client a handle belongs to. Ordinary agents are `Agent`; the
+/// browser form-injector (native-messaging host) enrolls as `Injector`. Only an
+/// `Injector` handle may service injection jobs, and there is no wire path to
+/// enroll one — the app auto-provisions it. This keeps a compromised agent from
+/// ever registering as the injector and receiving plaintext.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HandleKind {
+    #[default]
+    Agent,
+    Injector,
+}
+
 /// How a grant came to exist — recorded for the audit log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -49,11 +62,19 @@ pub struct HandleRecord {
     /// popup. `None` means "always prompt".
     #[serde(default)]
     pub policy: Option<HandlePolicy>,
+    /// What kind of client this handle is. Defaults to `Agent` so handles
+    /// serialized before this field existed load unchanged.
+    #[serde(default)]
+    pub kind: HandleKind,
 }
 
 impl HandleRecord {
     pub fn is_active(&self) -> bool {
         !self.revoked
+    }
+
+    pub fn is_injector(&self) -> bool {
+        self.kind == HandleKind::Injector
     }
 }
 
@@ -185,6 +206,7 @@ mod tests {
             last_used_unix: None,
             revoked: false,
             policy: None,
+            kind: HandleKind::Agent,
         }
     }
 
@@ -201,6 +223,25 @@ mod tests {
             approved_by: ApprovedBy::PreCreated,
             reason: String::new(),
         }
+    }
+
+    #[test]
+    fn handle_kind_defaults_to_agent_for_old_records() {
+        // A handle serialized before `kind` existed has no such field.
+        let json = r#"{"handle_id":"h1","secret":"s","label":"l","created_unix":1}"#;
+        let h: HandleRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(h.kind, HandleKind::Agent);
+        assert!(!h.is_injector());
+    }
+
+    #[test]
+    fn injector_kind_round_trips() {
+        let mut h = handle();
+        h.kind = HandleKind::Injector;
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(json.contains("\"kind\":\"injector\""));
+        let back: HandleRecord = serde_json::from_str(&json).unwrap();
+        assert!(back.is_injector());
     }
 
     #[test]

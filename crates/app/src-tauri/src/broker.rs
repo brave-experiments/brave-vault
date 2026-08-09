@@ -282,6 +282,7 @@ fn handle_enroll(label: String, app: &AppHandle) -> Response {
         last_used_unix: None,
         revoked: false,
         policy: None,
+        kind: brave_vault_core::agent::model::HandleKind::Agent,
     });
     if write_vault(&data).is_err() {
         return Response::Error {
