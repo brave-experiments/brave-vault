@@ -12,10 +12,11 @@
 //! Everything sensitive is gated on the vault being unlocked. The master
 //! secrets (mnemonic, services key) never leave this process.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,7 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use brave_vault_core::agent::auth;
 use brave_vault_core::agent::model::{Action, ApprovedBy, AuditEntry, GrantRecord, HandleRecord};
 use brave_vault_core::agent::protocol::{
-    self, decode_line, encode_line, GrantSummary, Request, Response, RevealedItem,
+    self, decode_line, encode_line, GrantSummary, Request, Response, RevealedItem, Via,
 };
 use brave_vault_core::agent::resolve::{self, Match};
 use brave_vault_core::agent::transport::{Conn, Listener};
@@ -34,6 +35,11 @@ use crate::{load_vault, write_vault, SharedState};
 /// an approval popup.
 const DEFAULT_GRANT_TTL_SECS: u64 = 60;
 const APPROVAL_TIMEOUT_SECS: u64 = 120;
+/// How long the agent's PERFORM waits for the injector to finish a fill.
+const INJECT_TIMEOUT_SECS: u64 = 30;
+/// How long an injector host blocks in AWAITJOB before we return NOJOB so it
+/// can re-poll (keepalive).
+const INJECTOR_KEEPALIVE_SECS: u64 = 25;
 
 /// The user's answer to an approval popup, delivered from a Tauri command back
 /// to the blocked broker thread.
@@ -44,11 +50,36 @@ pub struct ApprovalResponse {
     pub max_uses: u32,
 }
 
+/// A single injection job handed to the connected injector host. Carries the
+/// plaintext credential; only ever delivered to an injector-authed connection.
+#[derive(Clone)]
+struct InjectJob {
+    job_id: String,
+    origin: String,
+    url: String,
+    username: String,
+    password: String,
+}
+
+/// The outcome the injector host reports back for a job.
+pub struct InjectOutcome {
+    pub ok: bool,
+    pub detail: String,
+}
+
 /// Shared broker state. Managed by Tauri so commands (the popup responder) can
-/// resolve pending approvals.
+/// resolve pending approvals, and so the agent's PERFORM thread and the
+/// injector host's AWAITJOB thread can rendezvous.
 #[derive(Default)]
 pub struct BrokerHandle {
     pending: Mutex<HashMap<String, mpsc::Sender<ApprovalResponse>>>,
+    /// Queued injection jobs waiting for an injector host to pick them up.
+    inject_queue: (Mutex<VecDeque<InjectJob>>, Condvar),
+    /// Routes a JobResult back to the blocked PERFORM thread, keyed by job_id.
+    inject_results: Mutex<HashMap<String, mpsc::Sender<InjectOutcome>>>,
+    /// Number of injector host connections currently polling. >0 means an
+    /// injector is available to service a fill.
+    injectors_present: AtomicUsize,
 }
 
 impl BrokerHandle {
@@ -69,6 +100,76 @@ impl BrokerHandle {
 
     fn unregister(&self, request_id: &str) {
         self.pending.lock().unwrap().remove(request_id);
+    }
+
+    /// True while at least one injector host is connected and polling.
+    pub fn injector_present(&self) -> bool {
+        self.injectors_present.load(Ordering::SeqCst) > 0
+    }
+
+    fn injector_connected(&self) {
+        self.injectors_present.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn injector_disconnected(&self) {
+        // saturating: never underflow below zero.
+        let mut cur = self.injectors_present.load(Ordering::SeqCst);
+        while cur > 0 {
+            match self.injectors_present.compare_exchange(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    /// Queue a job for an injector host and register a channel for its result.
+    /// Returns the receiver the PERFORM thread blocks on.
+    fn dispatch_inject(&self, job: InjectJob) -> mpsc::Receiver<InjectOutcome> {
+        let (tx, rx) = mpsc::channel();
+        self.inject_results
+            .lock()
+            .unwrap()
+            .insert(job.job_id.clone(), tx);
+        let (q, cv) = &self.inject_queue;
+        q.lock().unwrap().push_back(job);
+        cv.notify_one();
+        rx
+    }
+
+    /// Block up to `timeout` for the next queued job. `None` on timeout so the
+    /// host re-polls (keepalive).
+    fn take_next_job(&self, timeout: Duration) -> Option<InjectJob> {
+        let (q, cv) = &self.inject_queue;
+        let mut guard = q.lock().unwrap();
+        loop {
+            if let Some(job) = guard.pop_front() {
+                return Some(job);
+            }
+            let (g, res) = cv.wait_timeout(guard, timeout).unwrap();
+            guard = g;
+            if res.timed_out() {
+                return guard.pop_front();
+            }
+        }
+    }
+
+    /// Deliver a job's outcome to the blocked PERFORM thread.
+    fn resolve_inject(&self, job_id: &str, outcome: InjectOutcome) -> bool {
+        let tx = self.inject_results.lock().unwrap().remove(job_id);
+        match tx {
+            Some(tx) => tx.send(outcome).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Drop a job's result channel (e.g. the PERFORM thread timed out).
+    fn cancel_inject(&self, job_id: &str) {
+        self.inject_results.lock().unwrap().remove(job_id);
     }
 }
 
@@ -130,13 +231,17 @@ pub fn start(app: AppHandle, state: SharedState) {
 fn handle_conn(conn: Conn, app: AppHandle, state: SharedState) -> std::io::Result<()> {
     let mut reader = BufReader::new(&conn);
     let mut nonce: Option<String> = None;
+    // Set true the first time this connection successfully polls as an injector.
+    // Used to gate JobResult and to clear injector presence on disconnect.
+    let mut is_injector = false;
 
     let mut line = String::new();
-    loop {
+    let result = loop {
         line.clear();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 {
-            break; // client hung up
+        match reader.read_line(&mut line) {
+            Ok(0) => break Ok(()), // client hung up
+            Ok(_) => {}
+            Err(e) => break Err(e),
         }
         let req: Request = match decode_line(&line) {
             Ok(r) => r,
@@ -150,10 +255,14 @@ fn handle_conn(conn: Conn, app: AppHandle, state: SharedState) -> std::io::Resul
                 continue;
             }
         };
-        let resp = dispatch(req, &mut nonce, &app, &state);
+        let resp = dispatch(req, &mut nonce, &mut is_injector, &app, &state);
         write_resp(&mut &conn, &resp)?;
+    };
+    // On teardown, release this connection's injector slot if it held one.
+    if is_injector {
+        app.state::<BrokerHandle>().injector_disconnected();
     }
-    Ok(())
+    result
 }
 
 fn write_resp<W: Write>(w: &mut W, resp: &Response) -> std::io::Result<()> {
@@ -165,6 +274,7 @@ fn write_resp<W: Write>(w: &mut W, resp: &Response) -> std::io::Result<()> {
 fn dispatch(
     req: Request,
     nonce: &mut Option<String>,
+    is_injector: &mut bool,
     app: &AppHandle,
     state: &SharedState,
 ) -> Response {
@@ -188,8 +298,15 @@ fn dispatch(
             grant_id,
             proof,
             target,
-        } => handle_perform(grant_id, proof, target, nonce, app, state),
+            via,
+        } => handle_perform(grant_id, proof, target, via, nonce, app, state),
         Request::ListGrants { handle_id, proof } => handle_list_grants(handle_id, proof, nonce),
+        Request::AwaitJob { handle_id, proof } => {
+            handle_await_job(handle_id, proof, nonce, is_injector, app)
+        }
+        Request::JobResult { job_id, ok, detail } => {
+            handle_job_result(job_id, ok, detail, *is_injector, app)
+        }
     }
 }
 
@@ -513,10 +630,12 @@ fn handle_consume(
     Response::Secret { item }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_perform(
     grant_id: String,
     proof: String,
     target: String,
+    via: Via,
     nonce: &Option<String>,
     app: &AppHandle,
     state: &SharedState,
@@ -565,50 +684,176 @@ fn handle_perform(
         };
     };
 
-    // Broker-performs: open the item's URL (or an explicit target) in the
-    // browser and place the password on the clipboard *here*, so the plaintext
-    // never crosses to the agent. The agent gets only success/failure.
-    let url = if !target.is_empty() {
-        target
-    } else {
-        item.url.clone()
+    // Carry out the action. `inject` is zero-knowledge (the browser extension
+    // fills the form); `clipboard` is an explicit, honestly-labeled fallback.
+    // A failed attempt does NOT consume the single-use grant, so a transient
+    // error leaves the user's approval intact for a retry within the TTL.
+    let outcome = match via {
+        Via::Inject => perform_inject(&item, &target, app),
+        Via::Clipboard => perform_clipboard(&item, &target, app),
     };
+    match outcome {
+        Ok(detail) => {
+            data.agent_grants[pos].consume();
+            if data.agent_grants[pos].uses_remaining == 0 {
+                data.agent_grants.remove(pos);
+            }
+            let _ = write_vault(&data);
+            audit(
+                "perform",
+                &handle_id,
+                &handle.label,
+                &item_id,
+                Some(Action::Use),
+                &detail,
+            );
+            Response::Done { ok: true, detail }
+        }
+        Err(detail) => {
+            // Grant is left live for a retry within its TTL.
+            audit(
+                "perform",
+                &handle_id,
+                &handle.label,
+                &item_id,
+                Some(Action::Use),
+                &format!("failed: {detail}"),
+            );
+            Response::Done { ok: false, detail }
+        }
+    }
+}
+
+/// Resolve the URL to inject/open: an explicit `target` must share the item's
+/// origin (so the agent can't steer a fill to an attacker page); otherwise fall
+/// back to the item's own URL.
+fn resolve_target(item: &RevealedItem, target: &str) -> Result<String, String> {
+    if target.is_empty() {
+        return Ok(item.url.clone());
+    }
+    if item.url.is_empty() || resolve::same_origin(target, &item.url) {
+        Ok(target.to_string())
+    } else {
+        Err("target origin does not match the item's origin".into())
+    }
+}
+
+/// Zero-knowledge path: hand the plaintext to the connected injector host, which
+/// fills the login form via the browser extension. The plaintext never reaches
+/// the agent. Fails clearly (no silent clipboard fallback) if no injector is
+/// connected. On success returns an audit-friendly detail string.
+fn perform_inject(item: &RevealedItem, target: &str, app: &AppHandle) -> Result<String, String> {
+    let broker = app.state::<BrokerHandle>();
+    if !broker.injector_present() {
+        return Err(
+            "no injector connected; the Brave extension/native host is not running. \
+             Re-run with --via clipboard to fall back explicitly."
+                .into(),
+        );
+    }
+    let url = resolve_target(item, target)?;
+    let origin = resolve::origin_of(&url);
+    if origin.is_empty() {
+        return Err("item has no usable URL/origin to inject into".into());
+    }
+    let job = InjectJob {
+        job_id: auth::new_grant_id(),
+        origin: origin.clone(),
+        url,
+        username: item.username.clone(),
+        password: item.password.clone(),
+    };
+    let job_id = job.job_id.clone();
+    let rx = broker.dispatch_inject(job);
+    match rx.recv_timeout(Duration::from_secs(INJECT_TIMEOUT_SECS)) {
+        Ok(outcome) if outcome.ok => Ok(format!("injected into {origin}")),
+        Ok(outcome) => Err(format!("inject failed: {}", outcome.detail)),
+        Err(_) => {
+            broker.cancel_inject(&job_id);
+            Err("inject timed out (extension did not respond)".into())
+        }
+    }
+}
+
+/// Explicit opt-in fallback: open the URL and copy the password to the OS
+/// clipboard. NOT zero-knowledge — any local process can read the clipboard —
+/// so the detail says so, and the approval popup labels it too.
+fn perform_clipboard(item: &RevealedItem, target: &str, app: &AppHandle) -> Result<String, String> {
+    let url = resolve_target(item, target)?;
     let mut detail = String::new();
     if !url.is_empty() {
-        match app.opener().open_url(&url, None::<&str>) {
-            Ok(()) => detail.push_str(&format!("opened {url}")),
-            Err(e) => {
-                return Response::Done {
-                    ok: false,
-                    detail: format!("open failed: {e}"),
-                }
-            }
-        }
+        app.opener()
+            .open_url(&url, None::<&str>)
+            .map_err(|e| format!("open failed: {e}"))?;
+        detail.push_str(&format!("opened {url}"));
     }
     if !item.password.is_empty() {
         use tauri_plugin_clipboard_manager::ClipboardExt;
-        if app.clipboard().write_text(item.password.clone()).is_ok() {
-            if !detail.is_empty() {
-                detail.push_str("; ");
-            }
-            detail.push_str("password copied to clipboard by broker");
+        app.clipboard()
+            .write_text(item.password.clone())
+            .map_err(|e| format!("clipboard write failed: {e}"))?;
+        if !detail.is_empty() {
+            detail.push_str("; ");
         }
+        detail.push_str("password copied to clipboard (readable by other local apps)");
     }
+    Ok(detail)
+}
 
-    data.agent_grants[pos].consume();
-    if data.agent_grants[pos].uses_remaining == 0 {
-        data.agent_grants.remove(pos);
+/// The injector native-messaging host registers here and blocks for a job. Only
+/// an injector-kind handle may poll; ordinary agents are rejected so they can
+/// never receive injected plaintext.
+fn handle_await_job(
+    handle_id: String,
+    proof: String,
+    nonce: &Option<String>,
+    is_injector: &mut bool,
+    app: &AppHandle,
+) -> Response {
+    let handle = match authed_handle(&handle_id, &proof, nonce) {
+        Ok(h) => h,
+        Err(r) => return r,
+    };
+    if !handle.is_injector() {
+        return Response::Error {
+            message: "not an injector handle".into(),
+        };
     }
-    let _ = write_vault(&data);
-    audit(
-        "perform",
-        &handle_id,
-        &handle.label,
-        &item_id,
-        Some(Action::Use),
-        &detail,
-    );
-    Response::Done { ok: true, detail }
+    let broker = app.state::<BrokerHandle>();
+    // First successful poll on this connection claims an injector slot.
+    if !*is_injector {
+        *is_injector = true;
+        broker.injector_connected();
+    }
+    match broker.take_next_job(Duration::from_secs(INJECTOR_KEEPALIVE_SECS)) {
+        Some(job) => Response::Job {
+            job_id: job.job_id,
+            origin: job.origin,
+            url: job.url,
+            username: job.username,
+            password: job.password,
+        },
+        None => Response::NoJob,
+    }
+}
+
+/// The injector host reports a job's outcome; route it back to the blocked
+/// PERFORM thread. Gated on this connection having authed as an injector.
+fn handle_job_result(
+    job_id: String,
+    ok: bool,
+    detail: String,
+    is_injector: bool,
+    app: &AppHandle,
+) -> Response {
+    if !is_injector {
+        return Response::Error {
+            message: "not an injector connection".into(),
+        };
+    }
+    app.state::<BrokerHandle>()
+        .resolve_inject(&job_id, InjectOutcome { ok, detail });
+    Response::JobAck
 }
 
 fn handle_list_grants(handle_id: String, proof: String, nonce: &Option<String>) -> Response {
@@ -774,3 +1019,104 @@ fn prompt_user(
 
 // Bring the opener extension trait into scope for handle_perform.
 use tauri_plugin_opener::OpenerExt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn job(id: &str) -> InjectJob {
+        InjectJob {
+            job_id: id.into(),
+            origin: "https://example.com".into(),
+            url: "https://example.com/login".into(),
+            username: "alice".into(),
+            password: "p".into(),
+        }
+    }
+
+    // The core rendezvous: a PERFORM thread dispatches a job and blocks; an
+    // injector thread picks it up via take_next_job and reports the outcome,
+    // which unblocks the PERFORM thread. This is the race-prone heart of the
+    // inject path, and it needs no browser or Tauri app to exercise.
+    #[test]
+    fn dispatch_take_resolve_round_trip() {
+        let broker = Arc::new(BrokerHandle::default());
+        let rx = broker.dispatch_inject(job("j1"));
+
+        // Injector side, on another thread.
+        let b2 = broker.clone();
+        let t = std::thread::spawn(move || {
+            let j = b2.take_next_job(Duration::from_secs(5)).expect("a job");
+            assert_eq!(j.job_id, "j1");
+            assert_eq!(j.password, "p");
+            b2.resolve_inject(
+                &j.job_id,
+                InjectOutcome {
+                    ok: true,
+                    detail: "filled".into(),
+                },
+            );
+        });
+
+        let outcome = rx.recv_timeout(Duration::from_secs(5)).expect("outcome");
+        assert!(outcome.ok);
+        assert_eq!(outcome.detail, "filled");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn take_next_job_times_out_when_idle() {
+        let broker = BrokerHandle::default();
+        assert!(broker.take_next_job(Duration::from_millis(50)).is_none());
+    }
+
+    #[test]
+    fn injector_presence_counts_connections() {
+        let broker = BrokerHandle::default();
+        assert!(!broker.injector_present());
+        broker.injector_connected();
+        broker.injector_connected();
+        assert!(broker.injector_present());
+        broker.injector_disconnected();
+        assert!(broker.injector_present());
+        broker.injector_disconnected();
+        assert!(!broker.injector_present());
+        // Never underflows below zero.
+        broker.injector_disconnected();
+        assert!(!broker.injector_present());
+    }
+
+    #[test]
+    fn cancel_inject_drops_result_channel() {
+        let broker = BrokerHandle::default();
+        let rx = broker.dispatch_inject(job("j2"));
+        broker.cancel_inject("j2");
+        // Resolving a cancelled job returns false (no receiver registered).
+        assert!(!broker.resolve_inject(
+            "j2",
+            InjectOutcome {
+                ok: true,
+                detail: String::new()
+            }
+        ));
+        drop(rx);
+    }
+
+    #[test]
+    fn resolve_target_enforces_origin_binding() {
+        let item = RevealedItem {
+            url: "https://example.com/login".into(),
+            ..Default::default()
+        };
+        // Empty target → item's own URL.
+        assert_eq!(
+            resolve_target(&item, "").unwrap(),
+            "https://example.com/login"
+        );
+        // Same-origin target is allowed.
+        assert!(resolve_target(&item, "https://example.com/account").is_ok());
+        // Lookalike / different origin is rejected.
+        assert!(resolve_target(&item, "https://evil.example.net/login").is_err());
+    }
+}
