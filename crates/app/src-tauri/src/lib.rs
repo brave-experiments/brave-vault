@@ -1,6 +1,7 @@
 //! Brave Vault — Tauri backend. Bridges the web UI to brave_vault_core.
 
 mod broker;
+mod injector;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1579,6 +1580,9 @@ pub fn run() {
         .manage(PurgeCancel::default())
         .manage(broker::BrokerHandle::default())
         .setup(move |app| {
+            // Auto-provision the browser-injector identity (handle + keychain
+            // secret + native-messaging manifest) so `use --via inject` works.
+            injector::provision();
             // Start the local IPC broker so enrolled agents can request items.
             broker::start(app.handle().clone(), shared.clone());
             Ok(())

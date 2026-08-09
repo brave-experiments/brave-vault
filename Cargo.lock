@@ -406,6 +406,7 @@ name = "brave_vault_app"
 version = "0.1.0"
 dependencies = [
  "brave_vault_core",
+ "keyring",
  "serde",
  "serde_json",
  "tauri",
