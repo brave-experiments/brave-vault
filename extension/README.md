@@ -1,10 +1,20 @@
 # Brave Vault Injector extension
 
-Fills logins requested by the Brave Vault app via its native-messaging host
-(`brave-vault-injector`). The credential flows broker → native host → this
-extension → the page's form. It never reaches an automation agent, and it is
-only ever filled on the exact origin the credential belongs to (checked in the
-broker, the background worker, and again in the content script).
+Two capabilities requested by the Brave Vault app via its native-messaging host
+(`brave-vault-injector`):
+
+- **Fill a login** — the credential flows broker → native host → this extension
+  → the page's form. It never reaches an automation agent, and is only ever
+  filled on the exact origin the credential belongs to (checked in the broker,
+  the background worker, and again in the content script).
+- **Grab a session** — for an approved set of hosts, the extension reads the
+  logged-in session cookies and returns them to the agent (which replays them in
+  its own automation browser). The scope is **browser-enforced**: the extension
+  holds no standing host access (`optional_host_permissions`), so it must obtain
+  permission for exactly the approved hosts at grab time. Brave prompts and
+  refuses every other origin (e.g. your bank) at the sandbox level. Caveat: a
+  grabbed session is a full-account bearer token until it expires — grants are
+  short-TTL, single-use, and revocable.
 
 ## Load for development
 

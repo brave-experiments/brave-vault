@@ -21,7 +21,12 @@ function connect() {
 }
 
 async function onHostMessage(msg) {
-  if (!msg || msg.type !== "fill") return;
+  if (!msg) return;
+  if (msg.type === "fill") return onFill(msg);
+  if (msg.type === "grab_session") return onGrabSession(msg);
+}
+
+async function onFill(msg) {
   const { job_id, origin, url } = msg;
   try {
     const tabId = await findOrOpenTab(origin, url);
@@ -40,8 +45,69 @@ async function onHostMessage(msg) {
   }
 }
 
+// Grab session cookies for the approved hosts. The security guarantee is the
+// browser's, not ours: the extension holds NO standing host access, so it must
+// obtain optional_host_permissions for exactly these hosts. Brave prompts the
+// user and refuses every other origin (e.g. a bank) at the sandbox level.
+async function onGrabSession(msg) {
+  const { job_id, origins } = msg;
+  try {
+    const patterns = (origins || []).map((h) => `*://${h}/*`);
+    if (!patterns.length) {
+      return replySession(job_id, false, [], "no origins requested");
+    }
+    const granted = await chrome.permissions.request({ origins: patterns });
+    if (!granted) {
+      return replySession(job_id, false, [], "user declined host permission");
+    }
+    const seen = new Set();
+    const out = [];
+    for (const host of origins) {
+      // getAll by domain returns cookies for that host (and its dot-domain
+      // parents that set domain cookies), but only for hosts we now have
+      // permission to read.
+      const cookies = await chrome.cookies.getAll({ domain: host });
+      for (const c of cookies) {
+        const key = `${c.domain}|${c.path}|${c.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          secure: !!c.secure,
+          http_only: !!c.httpOnly,
+          same_site: sameSite(c.sameSite),
+          expiration: c.expirationDate || 0,
+        });
+      }
+    }
+    replySession(job_id, true, out, "");
+  } catch (e) {
+    replySession(job_id, false, [], String(e && e.message ? e.message : e));
+  }
+}
+
+function sameSite(s) {
+  switch (s) {
+    case "strict":
+      return "Strict";
+    case "lax":
+      return "Lax";
+    case "no_restriction":
+      return "None";
+    default:
+      return "";
+  }
+}
+
 function reply(job_id, ok, detail) {
   if (port) port.postMessage({ type: "fill_result", job_id, ok, detail });
+}
+
+function replySession(job_id, ok, cookies, detail) {
+  if (port) port.postMessage({ type: "session_result", job_id, ok, cookies, detail });
 }
 
 // Find an existing tab on the target origin, or open one and wait for it to

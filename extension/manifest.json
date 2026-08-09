@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "description": "Fills logins from Brave Vault via its native host. The credential never reaches an automation agent.",
   "background": { "service_worker": "background.js" },
-  "permissions": ["nativeMessaging", "tabs", "scripting"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": ["nativeMessaging", "tabs", "scripting", "cookies"],
+  "optional_host_permissions": ["*://*/*"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
