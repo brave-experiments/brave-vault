@@ -83,6 +83,19 @@ pub enum Request {
     },
     /// List the grants currently live for this handle.
     ListGrants { handle_id: String, proof: String },
+    /// Redeem a `session` grant: the injector grabs the live cookies for the
+    /// grant's approved origin set and returns them to the agent.
+    GrabSession { grant_id: String, proof: String },
+    /// The injector host reports the outcome of a grab job, carrying the cookies
+    /// it read (empty on failure).
+    SessionResult {
+        job_id: String,
+        ok: bool,
+        #[serde(default)]
+        cookies: Vec<CookieData>,
+        #[serde(default)]
+        detail: String,
+    },
     /// The browser-injector native-messaging host registers as the active
     /// injector and blocks waiting for a job. Must authenticate as an
     /// injector-kind handle; the broker rejects ordinary agents here. Replies
@@ -142,6 +155,18 @@ pub enum Response {
         username: String,
         password: String,
     },
+    /// A grab-session job for the injector host: read the live cookies for this
+    /// approved origin set via the extension. Carries no secret — the cookies
+    /// flow back the other way, in `SessionResult`.
+    GrabJob {
+        job_id: String,
+        origins: Vec<String>,
+    },
+    /// The cookies grabbed for a `session` grant, returned to the agent. The
+    /// agent injects these into its own automation browser.
+    Session {
+        cookies: Vec<CookieData>,
+    },
     /// Keepalive reply to `AwaitJob`: no job within the poll window; the host
     /// should re-issue `AwaitJob`.
     NoJob,
@@ -180,6 +205,30 @@ pub struct RevealedItem {
     /// Extra labeled fields (e.g. identity address parts).
     #[serde(default)]
     pub fields: Vec<(String, String)>,
+}
+
+/// One browser cookie, grabbed from a logged-in session. Field names/shape line
+/// up with what Playwright's `context.addCookies` and CDP `Network.setCookie`
+/// expect, so an agent can replay them directly. All optional for forward-compat
+/// across browser versions.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CookieData {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub secure: bool,
+    #[serde(default)]
+    pub http_only: bool,
+    /// "Strict" | "Lax" | "None" | "" (unspecified).
+    #[serde(default)]
+    pub same_site: String,
+    /// Unix seconds; 0 / absent means a session cookie.
+    #[serde(default)]
+    pub expiration: f64,
 }
 
 /// Non-secret summary of a grant, for `ListGrants`.
@@ -325,6 +374,59 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn grab_session_and_session_round_trip() {
+        let line = encode_line(&Request::GrabSession {
+            grant_id: "g".into(),
+            proof: "p".into(),
+        });
+        assert!(matches!(
+            decode_line::<Request>(&line).unwrap(),
+            Request::GrabSession { .. }
+        ));
+
+        let resp = Response::Session {
+            cookies: vec![CookieData {
+                name: "SID".into(),
+                value: "abc".into(),
+                domain: ".google.com".into(),
+                http_only: true,
+                ..Default::default()
+            }],
+        };
+        let back: Response = decode_line(&encode_line(&resp)).unwrap();
+        match back {
+            Response::Session { cookies } => {
+                assert_eq!(cookies.len(), 1);
+                assert_eq!(cookies[0].name, "SID");
+                assert!(cookies[0].http_only);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn grab_job_and_session_result_round_trip() {
+        let line = encode_line(&Response::GrabJob {
+            job_id: "j".into(),
+            origins: vec!["mail.google.com".into(), "accounts.google.com".into()],
+        });
+        match decode_line::<Response>(&line).unwrap() {
+            Response::GrabJob { origins, .. } => assert_eq!(origins.len(), 2),
+            _ => panic!("wrong variant"),
+        }
+        let sr = encode_line(&Request::SessionResult {
+            job_id: "j".into(),
+            ok: true,
+            cookies: vec![CookieData::default()],
+            detail: String::new(),
+        });
+        assert!(matches!(
+            decode_line::<Request>(&sr).unwrap(),
+            Request::SessionResult { ok: true, .. }
+        ));
     }
 
     #[test]

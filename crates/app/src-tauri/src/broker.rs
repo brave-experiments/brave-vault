@@ -24,7 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use brave_vault_core::agent::auth;
 use brave_vault_core::agent::model::{Action, ApprovedBy, AuditEntry, GrantRecord, HandleRecord};
 use brave_vault_core::agent::protocol::{
-    self, decode_line, encode_line, GrantSummary, Request, Response, RevealedItem, Via,
+    self, decode_line, encode_line, CookieData, GrantSummary, Request, Response, RevealedItem, Via,
 };
 use brave_vault_core::agent::resolve::{self, Match};
 use brave_vault_core::agent::transport::{Conn, Listener};
@@ -50,21 +50,39 @@ pub struct ApprovalResponse {
     pub max_uses: u32,
 }
 
-/// A single injection job handed to the connected injector host. Carries the
-/// plaintext credential; only ever delivered to an injector-authed connection.
+/// A job handed to the connected injector host. Only ever delivered to an
+/// injector-authed connection. `Fill` carries the plaintext credential to type;
+/// `Grab` carries only the approved origin set (the cookies flow back).
 #[derive(Clone)]
-struct InjectJob {
-    job_id: String,
-    origin: String,
-    url: String,
-    username: String,
-    password: String,
+enum InjectJob {
+    Fill {
+        job_id: String,
+        origin: String,
+        url: String,
+        username: String,
+        password: String,
+    },
+    Grab {
+        job_id: String,
+        origins: Vec<String>,
+    },
 }
 
-/// The outcome the injector host reports back for a job.
+impl InjectJob {
+    fn job_id(&self) -> &str {
+        match self {
+            InjectJob::Fill { job_id, .. } => job_id,
+            InjectJob::Grab { job_id, .. } => job_id,
+        }
+    }
+}
+
+/// The outcome the injector host reports back for a job. `cookies` is populated
+/// only for a grab; empty for a fill.
 pub struct InjectOutcome {
     pub ok: bool,
     pub detail: String,
+    pub cookies: Vec<CookieData>,
 }
 
 /// Shared broker state. Managed by Tauri so commands (the popup responder) can
@@ -134,7 +152,7 @@ impl BrokerHandle {
         self.inject_results
             .lock()
             .unwrap()
-            .insert(job.job_id.clone(), tx);
+            .insert(job.job_id().to_string(), tx);
         let (q, cv) = &self.inject_queue;
         q.lock().unwrap().push_back(job);
         cv.notify_one();
@@ -307,6 +325,15 @@ fn dispatch(
         Request::JobResult { job_id, ok, detail } => {
             handle_job_result(job_id, ok, detail, *is_injector, app)
         }
+        Request::GrabSession { grant_id, proof } => {
+            handle_grab_session(grant_id, proof, nonce, app)
+        }
+        Request::SessionResult {
+            job_id,
+            ok,
+            cookies,
+            detail,
+        } => handle_session_result(job_id, ok, cookies, detail, *is_injector, app),
     }
 }
 
@@ -430,6 +457,12 @@ fn handle_request(
         Err(r) => return r,
     };
 
+    // A session grab targets an approved set of browser origins, not a stored
+    // vault item, so it skips vault resolution entirely.
+    if action == Action::Session {
+        return handle_session_request(&handle_id, &handle.label, &item, &reason, app);
+    }
+
     // Resolve the human query to concrete item id(s).
     let matches = resolve::resolve(&item, &data.passwords, &data.identities, &data.bookmarks);
     let chosen: Match = match matches.len() {
@@ -497,6 +530,7 @@ fn handle_request(
             let action_word = match action {
                 Action::Reveal => "reveal",
                 Action::Use => "use",
+                Action::Session => "grab the session for",
             };
             let prompt = format!(
                 "Agent \"{}\" wants to {action_word} \"{}\" ({}).",
@@ -555,6 +589,121 @@ fn handle_request(
                         ttl_secs: ttl,
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Parse the comma-separated host set for a session grab, normalizing each to a
+/// bare host (accepts `mail.google.com` or `https://mail.google.com/...`).
+/// Returns an error string if any entry has no usable host.
+fn parse_origin_set(item: &str) -> Result<Vec<String>, String> {
+    let mut hosts = Vec::new();
+    for raw in item.split(',') {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        // Accept a full URL or a bare host; normalize to the host.
+        let host = if entry.contains("://") {
+            let origin = resolve::origin_of(entry);
+            origin
+                .split_once("://")
+                .map(|(_, h)| h.to_string())
+                .unwrap_or_default()
+        } else {
+            // Reject anything with a path/space — we want a bare host.
+            entry
+                .split(['/', ' ', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .to_lowercase()
+        };
+        if host.is_empty() || !host.contains('.') {
+            return Err(format!("\"{entry}\" is not a valid host"));
+        }
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    if hosts.is_empty() {
+        Err("no hosts given; pass a comma-separated host set".into())
+    } else {
+        Ok(hosts)
+    }
+}
+
+/// Handle a `session` request: always prompt (there's no stored item to
+/// pre-authorize against), then mint an origin-scoped grant on approval.
+fn handle_session_request(
+    handle_id: &str,
+    handle_label: &str,
+    item: &str,
+    reason: &str,
+    app: &AppHandle,
+) -> Response {
+    let hosts = match parse_origin_set(item) {
+        Ok(h) => h,
+        Err(e) => return Response::Error { message: e },
+    };
+    touch_handle_last_used(handle_id);
+    let host_list = hosts.join(", ");
+    let prompt = format!(
+        "Agent \"{handle_label}\" wants to grab the logged-in browser session \
+         (cookies) for: {host_list}. The agent will receive these cookies."
+    );
+    match prompt_user(
+        app,
+        "grab session",
+        &host_list,
+        &prompt,
+        Some(Action::Session),
+        reason,
+    ) {
+        None => Response::Error {
+            message: "approval timed out".into(),
+        },
+        Some(r) if !r.approved => {
+            audit(
+                "deny",
+                handle_id,
+                handle_label,
+                &host_list,
+                Some(Action::Session),
+                "user denied session grab",
+            );
+            Response::Denied {
+                reason: "user denied the request".into(),
+            }
+        }
+        Some(r) => {
+            let ttl = if r.ttl_secs == 0 {
+                DEFAULT_GRANT_TTL_SECS
+            } else {
+                r.ttl_secs
+            };
+            let uses = r.max_uses.max(1);
+            let scope: Vec<String> = hosts.iter().map(|h| format!("origin:{h}")).collect();
+            let g = mint_grant_scoped(
+                handle_id,
+                scope,
+                Action::Session,
+                ttl,
+                uses,
+                ApprovedBy::UserPopup,
+                reason,
+            );
+            audit(
+                "issue",
+                handle_id,
+                handle_label,
+                &host_list,
+                Some(Action::Session),
+                "user approved session grab",
+            );
+            Response::Grant {
+                grant_id: g.grant_id,
+                ttl_secs: ttl,
             }
         }
     }
@@ -756,14 +905,14 @@ fn perform_inject(item: &RevealedItem, target: &str, app: &AppHandle) -> Result<
     if origin.is_empty() {
         return Err("item has no usable URL/origin to inject into".into());
     }
-    let job = InjectJob {
-        job_id: auth::new_grant_id(),
+    let job_id = auth::new_grant_id();
+    let job = InjectJob::Fill {
+        job_id: job_id.clone(),
         origin: origin.clone(),
         url,
         username: item.username.clone(),
         password: item.password.clone(),
     };
-    let job_id = job.job_id.clone();
     let rx = broker.dispatch_inject(job);
     match rx.recv_timeout(Duration::from_secs(INJECT_TIMEOUT_SECS)) {
         Ok(outcome) if outcome.ok => Ok(format!("injected into {origin}")),
@@ -826,13 +975,20 @@ fn handle_await_job(
         broker.injector_connected();
     }
     match broker.take_next_job(Duration::from_secs(INJECTOR_KEEPALIVE_SECS)) {
-        Some(job) => Response::Job {
-            job_id: job.job_id,
-            origin: job.origin,
-            url: job.url,
-            username: job.username,
-            password: job.password,
+        Some(InjectJob::Fill {
+            job_id,
+            origin,
+            url,
+            username,
+            password,
+        }) => Response::Job {
+            job_id,
+            origin,
+            url,
+            username,
+            password,
         },
+        Some(InjectJob::Grab { job_id, origins }) => Response::GrabJob { job_id, origins },
         None => Response::NoJob,
     }
 }
@@ -851,8 +1007,151 @@ fn handle_job_result(
             message: "not an injector connection".into(),
         };
     }
-    app.state::<BrokerHandle>()
-        .resolve_inject(&job_id, InjectOutcome { ok, detail });
+    app.state::<BrokerHandle>().resolve_inject(
+        &job_id,
+        InjectOutcome {
+            ok,
+            detail,
+            cookies: Vec::new(),
+        },
+    );
+    Response::JobAck
+}
+
+/// Redeem a `session` grant: dispatch a grab job to the injector for the grant's
+/// approved origin set and return the cookies the extension read. The cookies
+/// never touch the vault — this is a live grab returned to the agent.
+fn handle_grab_session(
+    grant_id: String,
+    proof: String,
+    nonce: &Option<String>,
+    app: &AppHandle,
+) -> Response {
+    let mut data = load_vault().unwrap_or_default();
+    let now = now_unix();
+    let Some(pos) = data
+        .agent_grants
+        .iter()
+        .position(|g| g.grant_id == grant_id)
+    else {
+        return Response::Error {
+            message: "unknown grant".into(),
+        };
+    };
+    let handle_id = data.agent_grants[pos].handle_id.clone();
+    let handle = match authed_handle(&handle_id, &proof, nonce) {
+        Ok(h) => h,
+        Err(r) => return r,
+    };
+    {
+        let g = &data.agent_grants[pos];
+        if g.action != Action::Session {
+            return Response::Error {
+                message: "this grant is not a session grant".into(),
+            };
+        }
+        if !g.is_live(now) {
+            return Response::Error {
+                message: "grant expired or exhausted".into(),
+            };
+        }
+    }
+    // scope holds "origin:<host>" entries; hand the bare hosts to the extension.
+    let origins: Vec<String> = data.agent_grants[pos]
+        .scope
+        .iter()
+        .filter_map(|s| s.strip_prefix("origin:").map(|h| h.to_string()))
+        .collect();
+    if origins.is_empty() {
+        return Response::Error {
+            message: "session grant has no origins".into(),
+        };
+    }
+
+    let broker = app.state::<BrokerHandle>();
+    if !broker.injector_present() {
+        audit(
+            "session",
+            &handle_id,
+            &handle.label,
+            &origins.join(", "),
+            Some(Action::Session),
+            "failed: no injector connected",
+        );
+        return Response::Error {
+            message: "no injector connected; the Brave extension/native host is not running".into(),
+        };
+    }
+    let job_id = auth::new_grant_id();
+    let rx = broker.dispatch_inject(InjectJob::Grab {
+        job_id: job_id.clone(),
+        origins: origins.clone(),
+    });
+    match rx.recv_timeout(Duration::from_secs(INJECT_TIMEOUT_SECS)) {
+        Ok(outcome) if outcome.ok => {
+            data.agent_grants[pos].consume();
+            if data.agent_grants[pos].uses_remaining == 0 {
+                data.agent_grants.remove(pos);
+            }
+            let _ = write_vault(&data);
+            audit(
+                "session",
+                &handle_id,
+                &handle.label,
+                &origins.join(", "),
+                Some(Action::Session),
+                &format!("grabbed {} cookies", outcome.cookies.len()),
+            );
+            Response::Session {
+                cookies: outcome.cookies,
+            }
+        }
+        Ok(outcome) => {
+            audit(
+                "session",
+                &handle_id,
+                &handle.label,
+                &origins.join(", "),
+                Some(Action::Session),
+                &format!("failed: {}", outcome.detail),
+            );
+            Response::Error {
+                message: format!("session grab failed: {}", outcome.detail),
+            }
+        }
+        Err(_) => {
+            broker.cancel_inject(&job_id);
+            Response::Error {
+                message: "session grab timed out (extension did not respond)".into(),
+            }
+        }
+    }
+}
+
+/// The injector host returns the cookies it grabbed; route them back to the
+/// blocked `handle_grab_session`. Gated on the connection having authed as an
+/// injector.
+fn handle_session_result(
+    job_id: String,
+    ok: bool,
+    cookies: Vec<CookieData>,
+    detail: String,
+    is_injector: bool,
+    app: &AppHandle,
+) -> Response {
+    if !is_injector {
+        return Response::Error {
+            message: "not an injector connection".into(),
+        };
+    }
+    app.state::<BrokerHandle>().resolve_inject(
+        &job_id,
+        InjectOutcome {
+            ok,
+            detail,
+            cookies,
+        },
+    );
     Response::JobAck
 }
 
@@ -880,10 +1179,32 @@ fn handle_list_grants(handle_id: String, proof: String, nonce: &Option<String>) 
 
 // ---------- helpers ----------
 
-/// Mint and persist a new grant.
+/// Mint and persist a new grant over a single item id.
 fn mint_grant(
     handle_id: &str,
     item_id: &str,
+    action: Action,
+    ttl_secs: u64,
+    max_uses: u32,
+    approved_by: ApprovedBy,
+    reason: &str,
+) -> GrantRecord {
+    mint_grant_scoped(
+        handle_id,
+        vec![item_id.to_string()],
+        action,
+        ttl_secs,
+        max_uses,
+        approved_by,
+        reason,
+    )
+}
+
+/// Mint and persist a new grant over an explicit scope (one or more entries —
+/// item ids, or `origin:<host>` entries for a session grab).
+fn mint_grant_scoped(
+    handle_id: &str,
+    scope: Vec<String>,
     action: Action,
     ttl_secs: u64,
     max_uses: u32,
@@ -894,7 +1215,7 @@ fn mint_grant(
     let g = GrantRecord {
         grant_id: auth::new_grant_id(),
         handle_id: handle_id.to_string(),
-        scope: vec![item_id.to_string()],
+        scope,
         action,
         created_unix: now,
         expires_unix: now + ttl_secs,
@@ -1026,12 +1347,20 @@ mod tests {
     use std::sync::Arc;
 
     fn job(id: &str) -> InjectJob {
-        InjectJob {
+        InjectJob::Fill {
             job_id: id.into(),
             origin: "https://example.com".into(),
             url: "https://example.com/login".into(),
             username: "alice".into(),
             password: "p".into(),
+        }
+    }
+
+    fn ok_outcome(detail: &str) -> InjectOutcome {
+        InjectOutcome {
+            ok: true,
+            detail: detail.into(),
+            cookies: Vec::new(),
         }
     }
 
@@ -1048,21 +1377,78 @@ mod tests {
         let b2 = broker.clone();
         let t = std::thread::spawn(move || {
             let j = b2.take_next_job(Duration::from_secs(5)).expect("a job");
-            assert_eq!(j.job_id, "j1");
-            assert_eq!(j.password, "p");
-            b2.resolve_inject(
-                &j.job_id,
-                InjectOutcome {
-                    ok: true,
-                    detail: "filled".into(),
-                },
-            );
+            let jid = j.job_id().to_string();
+            assert_eq!(jid, "j1");
+            match &j {
+                InjectJob::Fill { password, .. } => assert_eq!(password, "p"),
+                _ => panic!("expected a fill job"),
+            }
+            b2.resolve_inject(&jid, ok_outcome("filled"));
         });
 
         let outcome = rx.recv_timeout(Duration::from_secs(5)).expect("outcome");
         assert!(outcome.ok);
         assert_eq!(outcome.detail, "filled");
         t.join().unwrap();
+    }
+
+    #[test]
+    fn grab_job_returns_cookies_to_waiter() {
+        let broker = Arc::new(BrokerHandle::default());
+        let rx = broker.dispatch_inject(InjectJob::Grab {
+            job_id: "g1".into(),
+            origins: vec!["mail.google.com".into()],
+        });
+        let b2 = broker.clone();
+        let t = std::thread::spawn(move || {
+            let j = b2.take_next_job(Duration::from_secs(5)).expect("a job");
+            match j {
+                InjectJob::Grab { job_id, origins } => {
+                    assert_eq!(origins, vec!["mail.google.com".to_string()]);
+                    b2.resolve_inject(
+                        &job_id,
+                        InjectOutcome {
+                            ok: true,
+                            detail: String::new(),
+                            cookies: vec![CookieData {
+                                name: "SID".into(),
+                                ..Default::default()
+                            }],
+                        },
+                    );
+                }
+                _ => panic!("expected a grab job"),
+            }
+        });
+        let outcome = rx.recv_timeout(Duration::from_secs(5)).expect("outcome");
+        assert!(outcome.ok);
+        assert_eq!(outcome.cookies.len(), 1);
+        assert_eq!(outcome.cookies[0].name, "SID");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn parse_origin_set_normalizes_and_rejects() {
+        assert_eq!(
+            parse_origin_set("mail.google.com, accounts.google.com").unwrap(),
+            vec![
+                "mail.google.com".to_string(),
+                "accounts.google.com".to_string()
+            ]
+        );
+        // Full URLs are reduced to their host.
+        assert_eq!(
+            parse_origin_set("https://mail.google.com/mail/u/0").unwrap(),
+            vec!["mail.google.com".to_string()]
+        );
+        // Dedups.
+        assert_eq!(
+            parse_origin_set("x.com, x.com").unwrap(),
+            vec!["x.com".to_string()]
+        );
+        // Rejects hostless / empty input.
+        assert!(parse_origin_set("").is_err());
+        assert!(parse_origin_set("localhost").is_err());
     }
 
     #[test]
@@ -1093,13 +1479,7 @@ mod tests {
         let rx = broker.dispatch_inject(job("j2"));
         broker.cancel_inject("j2");
         // Resolving a cancelled job returns false (no receiver registered).
-        assert!(!broker.resolve_inject(
-            "j2",
-            InjectOutcome {
-                ok: true,
-                detail: String::new()
-            }
-        ));
+        assert!(!broker.resolve_inject("j2", ok_outcome("")));
         drop(rx);
     }
 

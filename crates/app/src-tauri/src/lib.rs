@@ -1410,6 +1410,7 @@ fn grant_to_dto(g: &GrantRecord) -> GrantDto {
         action: match g.action {
             Action::Reveal => "reveal".into(),
             Action::Use => "use".into(),
+            Action::Session => "session".into(),
         },
         expires_unix: g.expires_unix,
         uses_remaining: g.uses_remaining,
@@ -1557,6 +1558,7 @@ fn agent_audit_log(limit: usize) -> Vec<AuditDto> {
                 .map(|a| match a {
                     Action::Reveal => "reveal".to_string(),
                     Action::Use => "use".to_string(),
+                    Action::Session => "session".to_string(),
                 })
                 .unwrap_or_default(),
             detail: e.detail,

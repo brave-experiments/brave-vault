@@ -16,6 +16,10 @@ pub enum Action {
     /// The broker performs the privileged action; the agent never sees the
     /// plaintext (true zero-knowledge).
     Use,
+    /// Grab the live browser session (cookies) for an approved origin set and
+    /// return it to the agent. The scope holds `origin:<host>` entries rather
+    /// than vault item ids; nothing is stored — it's a one-shot live grab.
+    Session,
 }
 
 /// What kind of client a handle belongs to. Ordinary agents are `Agent`; the

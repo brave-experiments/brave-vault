@@ -154,7 +154,8 @@ fn parse_action(s: &str) -> Result<Action> {
     match s {
         "reveal" => Ok(Action::Reveal),
         "use" => Ok(Action::Use),
-        _ => bail!("--action must be 'reveal' or 'use'"),
+        "session" => Ok(Action::Session),
+        _ => bail!("--action must be 'reveal', 'use', or 'session'"),
     }
 }
 
@@ -182,6 +183,9 @@ fn cmd_request(args: &[String]) -> Result<()> {
                 Action::Reveal => eprintln!("  brave-vault-agent reveal --grant {grant_id}"),
                 Action::Use => {
                     eprintln!("  brave-vault-agent use --grant {grant_id} --target <url>")
+                }
+                Action::Session => {
+                    eprintln!("  brave-vault-agent grab-session --grant {grant_id}")
                 }
             }
             Ok(())
@@ -359,6 +363,7 @@ fn cmd_list_grants() -> Result<()> {
                 let action = match g.action {
                     Action::Reveal => "reveal",
                     Action::Use => "use",
+                    Action::Session => "session",
                 };
                 println!(
                     "{} [{}] scope={:?} uses_left={} expires_unix={}",
