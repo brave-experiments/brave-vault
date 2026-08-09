@@ -38,6 +38,7 @@ fn run() -> Result<()> {
         Some("request") => cmd_request(&args[2..]),
         Some("reveal") => cmd_reveal(&args[2..]),
         Some("use") => cmd_use(&args[2..]),
+        Some("grab-session") => cmd_grab_session(&args[2..]),
         Some("list-grants") => cmd_list_grants(),
         Some("ping") => cmd_ping(),
         _ => {
@@ -56,16 +57,23 @@ USAGE:
   brave-vault-agent whoami
   brave-vault-agent forget                       (remove local handle)
   brave-vault-agent ping
-  brave-vault-agent request --item <q> --action reveal|use [--reason <text>]
+  brave-vault-agent request --item <q> --action reveal|use|session [--reason <text>]
   brave-vault-agent reveal --grant <id> [--print | --json]
   brave-vault-agent use --grant <id> [--target <url>] [--via inject|clipboard]
+  brave-vault-agent grab-session --grant <id>
   brave-vault-agent list-grants
 
 The agent holds only a handle; it never holds the vault master secret. A
 'reveal' returns one item once; a 'use' asks the app to perform the action so
 the secret never reaches this process. 'use' defaults to --via inject (the app
 fills the login form via its browser extension); --via clipboard is an explicit
-opt-in that copies the password to the clipboard (readable by other local apps)."
+opt-in that copies the password to the clipboard (readable by other local apps).
+
+A 'session' request authorizes grabbing the logged-in browser session for an
+approved host set: `request --action session --item \"mail.google.com,accounts.google.com\"`
+then `grab-session --grant <id>` prints those cookies as JSON on stdout for the
+agent to replay (e.g. Playwright addCookies). The cookies are a full-account
+bearer token until they expire — the grant is short-lived and single-use."
     );
 }
 
@@ -341,6 +349,35 @@ fn cmd_use(args: &[String]) -> Result<()> {
             } else {
                 bail!("action failed: {detail}")
             }
+        }
+        Response::Denied { reason } => bail!("denied: {reason}"),
+        Response::Error { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Redeem a session grant: the app grabs the logged-in cookies for the approved
+/// host set and returns them. We print them as one JSON array on stdout for the
+/// agent to replay (e.g. Playwright `context.addCookies`). These cookies are a
+/// live bearer token — treat them like a password.
+fn cmd_grab_session(args: &[String]) -> Result<()> {
+    let grant_id = flag(args, "--grant").ok_or_else(|| anyhow!("--grant is required"))?;
+    let (mut broker, handle_id) = connect_authed()?;
+    let proof = proof_for(&broker, &handle_id)?;
+    let resp = broker
+        .call(&Request::GrabSession {
+            grant_id: grant_id.to_string(),
+            proof,
+        })
+        .map_err(|e| anyhow!(e))?;
+    match resp {
+        Response::Session { cookies } => {
+            println!("{}", serde_json::to_string(&cookies)?);
+            eprintln!(
+                "grabbed {} cookies (bearer token — handle with care)",
+                cookies.len()
+            );
+            Ok(())
         }
         Response::Denied { reason } => bail!("denied: {reason}"),
         Response::Error { message } => bail!(message),
