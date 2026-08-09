@@ -46,12 +46,15 @@ jobs:
       - name: Run core tests (incl. transport round-trip)
         run: cargo test -p brave_vault_core
 
-      - name: Build agent CLI
-        run: cargo build -p brave_vault_agent
+      - name: Build agent CLI + injector host
+        run: cargo build -p brave_vault_agent -p brave_vault_injector
+
+      - name: Run injector host tests
+        run: cargo test -p brave_vault_injector
 
   # Format + lint, OS-independent. rustfmt is checked across the whole tree;
-  # clippy is scoped to the agent-access crates (core + agent CLI) — what this
-  # feature owns and keeps clean under -D warnings.
+  # clippy is scoped to the agent-access crates (core + agent CLI + injector
+  # host) — what this feature owns and keeps clean under -D warnings.
   lint:
     name: fmt + clippy
     runs-on: ubuntu-latest
@@ -67,5 +70,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: rustfmt
         run: cargo fmt --all -- --check
-      - name: clippy (core + agent CLI)
-        run: cargo clippy -p brave_vault_core -p brave_vault_agent -- -D warnings
+      - name: clippy (core + agent CLI + injector host)
+        run: cargo clippy -p brave_vault_core -p brave_vault_agent -p brave_vault_injector -- -D warnings

@@ -4,5 +4,6 @@ members = [
     "crates/core",
     "crates/cli",
     "crates/agent-cli",
+    "crates/injector-host",
     "crates/app/src-tauri",
 ]

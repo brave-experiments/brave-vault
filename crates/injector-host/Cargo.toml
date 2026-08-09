@@ -1,0 +1,16 @@
+[package]
+name = "brave_vault_injector"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "brave-vault-injector"
+path = "src/main.rs"
+
+[dependencies]
+brave_vault_core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# OS keychain for the injector handle secret (same backends as the agent CLI).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

@@ -454,6 +454,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brave_vault_injector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brave_vault_core",
+ "keyring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
