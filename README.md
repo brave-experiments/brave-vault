@@ -54,7 +54,32 @@ brave-vault-agent reveal --grant <id>          # copies the password to clipboar
   the app's **Agents** panel.
 - Access is per-item, single-use, and expires. Revoke any agent or grant from
   the Agents panel.
-- `--action use` asks the app to open the site and fill the password itself, so
-  the agent never sees it.
+
+### reveal vs use (two clearly-labeled capabilities)
+
+A grant authorizes exactly one action, and the token the agent holds cannot be
+redeemed for the other — you choose which at approval time:
+
+- **`reveal`** returns the plaintext to the agent once (e.g. for the agent to
+  type it). You are opting into the agent seeing the secret.
+- **`use`** asks the app to perform the login so the agent never sees the
+  password. This is the zero-knowledge path:
+
+  ```sh
+  brave-vault-agent request --item example.com --action use
+  brave-vault-agent use --grant <id>              # default: --via inject
+  ```
+
+  `--via inject` (default) fills the login form via the app's Brave browser
+  extension (see `extension/`), driven by a native-messaging host the app
+  provisions automatically. The credential flows app → native host → extension →
+  form and is filled only on the credential's own origin. `--via clipboard` is
+  an explicit opt-in that copies the password to the clipboard — **readable by
+  other local apps**, so it is not zero-knowledge and is labeled as such in the
+  audit log.
+
+Same-user caveat: no software boundary fully stops a same-user attacker. `use`
+raises the bar (the secret goes to the browser-spawned host, not the agent), but
+true isolation requires running the app/browser under a separate OS user.
 
 See `docs/agent-access-plan.md` for the design.

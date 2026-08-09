@@ -72,9 +72,10 @@ Achievable in two modes; we support both and default to the first where
 feasible:
 
 - **Broker-performs (true zero-knowledge).** Agent says "log into example.com";
-  the *broker* injects the credential / performs the action. Agent never
-  receives plaintext. Gold standard, but the broker must know how to *use* each
-  credential type.
+  the *broker* injects the credential via the Brave browser extension (see
+  `extension/`) driven by a native-messaging host (`brave-vault-injector`). The
+  agent never receives plaintext — the credential flows broker → native host →
+  extension → form, filled only on the credential's own origin. Gold standard.
 - **Just-in-time reveal.** The broker streams the plaintext to the agent's
   ephemeral subprocess for a single use, scoped and approval-gated. The agent
   briefly sees it. Pragmatic fallback for "the agent must type it itself."
@@ -209,8 +210,11 @@ brave-vault-agent request \
 brave-vault-agent reveal --grant <grant_id>
 # -> streams the secret to a fd/clipboard once; then the grant is dead
 
-brave-vault-agent use --grant <grant_id> --target <...>
-# -> broker performs the action; prints success/failure only
+brave-vault-agent use --grant <grant_id> [--target <url>] [--via inject|clipboard]
+# -> broker performs the action; prints success/failure only.
+# --via inject (default) fills the form via the browser extension (the agent
+#   never sees the password); --via clipboard is an explicit, clearly-labeled
+#   opt-in (readable by other local apps).
 
 brave-vault-agent list-grants          # what am I currently allowed to do
 brave-vault-agent whoami               # handle label, policy
@@ -240,17 +244,31 @@ Phases 1–6 are implemented in this repo:
 - **`crates/app/src-tauri/src/broker.rs`** — the local IPC broker: listener
   started at app launch (via `transport::Listener`), HELLO/NONCE handshake,
   handle auth, grant matching (pre-created + policy), approval-popup bridge,
-  single-use `reveal`, and broker-performs `use` (open URL + clipboard).
+  single-use `reveal`, and broker-performs `use` (extension injection by
+  default; explicit clipboard opt-in). Holds the injector job registry that
+  rendezvous the agent's `PERFORM` with the injector host's `AWAITJOB`.
+- **`crates/injector-host/`** (`brave-vault-injector`) — the Brave native-
+  messaging host: bridges the broker and the extension, authenticating as the
+  injector-kind handle. Chrome-framed stdio to the browser; unix socket to the
+  broker.
+- **`extension/`** — the Brave MV3 extension: background worker (native
+  messaging + tab matching) and content script (origin-guarded form fill).
 - **`crates/agent-cli/`** (`brave-vault-agent`) — the binary agents run:
   `enroll` / `whoami` / `forget` / `ping` / `request` / `reveal` / `use` /
   `list-grants`. Handle secret lives in the OS keychain; `reveal` copies to the
-  clipboard by default (never stdout unless `--print`).
+  clipboard by default (never stdout unless `--print`); `use` defaults to
+  `--via inject`.
+- The shared broker IPC client lives in **`crates/core/src/agent/client.rs`**,
+  reused by both the agent CLI and the injector host.
 - **App UI (`App.jsx`)** — an "Agents" panel to view/revoke handles, pre-create
   grants, view live grants, and read the audit log; plus a global approval popup
   wired to the `agent://approval-request` event.
 
 Remaining: Phase 0 sign-off, Phase 7 hardening (rate limits, peer-cred checks,
-global kill-switch), and the optional Phase 8 MCP wrapper.
+global kill-switch), running the app/browser under a separate OS user for true
+isolation, and the optional Phase 8 MCP wrapper. The browser end (extension
+`connectNative`, content-script fill) is verified by manual QA only — it cannot
+be automated headlessly.
 
 ## Phased plan
 
@@ -308,11 +326,23 @@ deliver value even if later phases slip.
 
 ### Phase 6 — `use` delivery (broker-performs / never-reveal)
 - Implement `PERFORM`: the broker carries out the privileged action so the
-  plaintext never enters the agent. First concrete action: **open URL + fill
-  credential** via the app (reuses existing `opener` capability), or perform an
-  authenticated request on the agent's behalf.
-- Define an extensible action registry so new "use" verbs can be added.
+  plaintext never enters the agent. Two channels, chosen by `--via`:
+  - **`inject` (default, zero-knowledge):** the broker hands the credential to a
+    Brave browser extension via a native-messaging host (`brave-vault-injector`,
+    a new crate). The host long-polls the broker (`AWAITJOB`), gated to an
+    injector-kind handle so an ordinary agent can never register as the injector
+    or receive the plaintext `JOB`. The extension fills the form only on the
+    credential's own origin (checked in the broker, the background worker, and
+    the content script). The app auto-provisions the injector handle + keychain
+    secret + native-messaging manifest on startup.
+  - **`clipboard` (explicit opt-in):** open URL + copy password to the clipboard.
+    NOT zero-knowledge — any local process can read the clipboard — so it is
+    labeled that way in the audit log. There is no silent fallback to this path.
 - **Exit:** agent triggers a login to a site and never sees the password.
+- **Same-user caveat:** the injector secret lives in the OS keychain under a
+  distinct service, so impersonating the injector requires keychain access, not
+  just socket access. No software boundary fully stops a same-user attacker;
+  true isolation would run the app/browser under a separate OS user (future).
 
 ### Phase 7 — Audit log, revocation & policy hardening
 - Append-only audit log (issuance + every consume/perform) surfaced in the app.
