@@ -11,6 +11,9 @@ const HOST_NAME = "com.brave.vault.injector";
 let port = null;
 
 function connect() {
+  // Guard: never open a second port. A double-connect spawns a duplicate native
+  // host, and the broker may then wake the stale one — causing grabs to hang.
+  if (port) return;
   port = chrome.runtime.connectNative(HOST_NAME);
   port.onMessage.addListener(onHostMessage);
   port.onDisconnect.addListener(() => {
@@ -19,6 +22,13 @@ function connect() {
     setTimeout(connect, 2000);
   });
 }
+
+// MV3 suspends idle service workers. An open native-messaging port keeps the
+// worker alive, but the worker can still be torn down and restarted — so
+// (re)connect on every wake event, and the `if (port) return` guard makes this
+// idempotent.
+chrome.runtime.onStartup.addListener(connect);
+chrome.runtime.onInstalled.addListener(connect);
 
 async function onHostMessage(msg) {
   if (!msg) return;
@@ -56,9 +66,27 @@ async function onGrabSession(msg) {
     if (!patterns.length) {
       return replySession(job_id, false, [], "no origins requested");
     }
-    const granted = await chrome.permissions.request({ origins: patterns });
-    if (!granted) {
-      return replySession(job_id, false, [], "user declined host permission");
+    // chrome.permissions.request() needs a user gesture, which we don't have
+    // when reacting to a native message — so first check if permission is
+    // already held (no gesture needed). If not, try to request, but never hang:
+    // if the request can't run without a gesture, tell the user to grant it once.
+    let has = await chrome.permissions.contains({ origins: patterns });
+    if (!has) {
+      try {
+        has = await chrome.permissions.request({ origins: patterns });
+      } catch (e) {
+        return replySession(
+          job_id,
+          false,
+          [],
+          "host permission not granted — open the extension and allow access to " +
+            origins.join(", ") +
+            " once (needs a click), then retry"
+        );
+      }
+      if (!has) {
+        return replySession(job_id, false, [], "user declined host permission");
+      }
     }
     const seen = new Set();
     const out = [];

@@ -22,10 +22,19 @@ use crate::{load_vault, now_unix_secs, write_vault};
 const NM_HOST_NAME: &str = "com.brave.vault.injector";
 /// Keychain service for the injector secret — distinct from the agent CLI's.
 const KEYRING_SERVICE: &str = "brave-vault-injector";
-/// The extension's stable id (derived from the fixed key in its manifest). Only
-/// this origin is allowed to launch the native host. Placeholder until the
-/// extension is packed with its key; update both together.
-const EXTENSION_ID: &str = "REPLACE_WITH_PACKED_EXTENSION_ID";
+/// Placeholder id used when `BRAVE_VAULT_EXTENSION_ID` is unset. A real install
+/// packs the extension with a fixed key and sets that env var to its id.
+const EXTENSION_ID_PLACEHOLDER: &str = "REPLACE_WITH_PACKED_EXTENSION_ID";
+
+/// The extension id allowed to launch the native host. Read from
+/// `BRAVE_VAULT_EXTENSION_ID` so a dev can point at their unpacked extension's
+/// id without hardcoding a machine-specific value; falls back to the placeholder.
+fn extension_id() -> String {
+    std::env::var("BRAVE_VAULT_EXTENSION_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| EXTENSION_ID_PLACEHOLDER.to_string())
+}
 
 fn brave_vault_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -130,7 +139,7 @@ fn write_nm_manifest() -> Result<(), String> {
         "description": "Brave Vault form injector",
         "path": bin.to_string_lossy(),
         "type": "stdio",
-        "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")],
+        "allowed_origins": [format!("chrome-extension://{}/", extension_id())],
     });
     std::fs::write(
         &manifest_path,

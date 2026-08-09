@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px system-ui; width: 280px; padding: 12px; }
+      button { font: 13px system-ui; padding: 6px 10px; margin-top: 8px; cursor: pointer; }
+      #status { margin-top: 8px; color: #444; white-space: pre-wrap; }
+      .host { font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <div>Grant this extension access to read cookies for the hosts Brave Vault
+    needs. This is the browser-enforced permission — nothing else can be read.</div>
+    <div>
+      <input id="hosts" class="host" style="width: 100%; margin-top: 8px"
+             value="mail.google.com,accounts.google.com,google.com" />
+    </div>
+    <button id="grant">Allow access to these hosts</button>
+    <button id="check">Check current access</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

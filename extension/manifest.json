@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Fills logins from Brave Vault via its native host. The credential never reaches an automation agent.",
   "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Brave Vault Injector" },
   "permissions": ["nativeMessaging", "tabs", "scripting", "cookies"],
   "optional_host_permissions": ["*://*/*"],
   "content_scripts": [
@@ -14,6 +15,5 @@
       "all_frames": false
     }
   ],
-  "_comment_key": "Set a fixed \"key\" here before packing so the extension id is stable and matches the native-messaging manifest's allowed_origins. Generate with: openssl / chrome pack; then update EXTENSION_ID in crates/app/src-tauri/src/injector.rs.",
-  "key": "REPLACE_WITH_EXTENSION_PUBLIC_KEY"
+  "_comment_key": "For a STABLE id across machines, set a fixed \"key\" (Chrome pack) and set BRAVE_VAULT_EXTENSION_ID to the resulting id so the app's native-messaging manifest allow-lists it. For unpacked dev, omit the key, load unpacked, and export BRAVE_VAULT_EXTENSION_ID=<the id Brave assigns>."
 }
