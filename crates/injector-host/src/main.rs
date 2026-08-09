@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use brave_vault_core::agent::auth;
 use brave_vault_core::agent::client::Broker;
-use brave_vault_core::agent::protocol::{Request, Response};
+use brave_vault_core::agent::protocol::{CookieData, Request, Response};
 
 fn main() {
     if let Err(e) = run() {
@@ -88,6 +88,24 @@ fn run() -> Result<()> {
                     eprintln!("[injector] unexpected reply to JobResult: {ack:?}");
                 }
             }
+            Response::GrabJob { job_id, origins } => {
+                let (ok, cookies, detail) =
+                    match run_grab(&mut stdin.lock(), &mut stdout.lock(), &job_id, &origins) {
+                        Ok(cookies) => (true, cookies, String::new()),
+                        Err(e) => (false, Vec::new(), format!("{e}")),
+                    };
+                let ack = broker
+                    .call(&Request::SessionResult {
+                        job_id,
+                        ok,
+                        cookies,
+                        detail,
+                    })
+                    .map_err(|e| anyhow!(e))?;
+                if !matches!(ack, Response::JobAck) {
+                    eprintln!("[injector] unexpected reply to SessionResult: {ack:?}");
+                }
+            }
             Response::Error { message } => bail!("broker error: {message}"),
             other => bail!("unexpected reply to AwaitJob: {other:?}"),
         }
@@ -144,5 +162,48 @@ fn run_job<R: Read, W: Write>(
         } else {
             detail
         });
+    }
+}
+
+/// Ask the extension to grab the session cookies for `origins` and return them.
+/// Cookie values are never logged.
+fn run_grab<R: Read, W: Write>(
+    ext_in: &mut R,
+    ext_out: &mut W,
+    job_id: &str,
+    origins: &[String],
+) -> Result<Vec<CookieData>> {
+    let msg = json!({
+        "type": "grab_session",
+        "job_id": job_id,
+        "origins": origins,
+    });
+    nm::write_message(ext_out, &msg)?;
+
+    loop {
+        let Some(reply) = nm::read_message(ext_in)? else {
+            bail!("extension closed the port before replying");
+        };
+        if reply.get("type").and_then(Value::as_str) != Some("session_result") {
+            continue;
+        }
+        if reply.get("job_id").and_then(Value::as_str) != Some(job_id) {
+            continue;
+        }
+        let ok = reply.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        if !ok {
+            let detail = reply
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or("extension declined or failed the grab");
+            bail!("{detail}");
+        }
+        let cookies = reply
+            .get("cookies")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(vec![]));
+        let cookies: Vec<CookieData> =
+            serde_json::from_value(cookies).map_err(|e| anyhow!("bad cookie payload: {e}"))?;
+        return Ok(cookies);
     }
 }
