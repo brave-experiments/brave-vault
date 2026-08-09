@@ -59,7 +59,7 @@ USAGE:
   brave-vault-agent forget                       (remove local handle)
   brave-vault-agent ping
   brave-vault-agent request --item <q> --action reveal|use [--reason <text>]
-  brave-vault-agent reveal --grant <id> [--print]
+  brave-vault-agent reveal --grant <id> [--print | --json]
   brave-vault-agent use --grant <id> [--target <url>]
   brave-vault-agent list-grants
 
@@ -189,6 +189,7 @@ fn cmd_request(args: &[String]) -> Result<()> {
 fn cmd_reveal(args: &[String]) -> Result<()> {
     let grant_id = flag(args, "--grant").ok_or_else(|| anyhow!("--grant is required"))?;
     let print = has_flag(args, "--print");
+    let json = has_flag(args, "--json");
 
     let (mut broker, handle_id) = connect_authed()?;
     let proof = proof_for(&broker, &handle_id)?;
@@ -198,7 +199,7 @@ fn cmd_reveal(args: &[String]) -> Result<()> {
     })?;
     match resp {
         Response::Secret { item } => {
-            deliver_secret(&item, print)?;
+            deliver_secret(&item, print, json)?;
             Ok(())
         }
         Response::Denied { reason } => bail!("denied: {reason}"),
@@ -207,23 +208,46 @@ fn cmd_reveal(args: &[String]) -> Result<()> {
     }
 }
 
+/// Build the stdout payload for `--json`/`--print`, or `None` for the default
+/// clipboard path. Pure so it can be tested without touching the clipboard.
+/// `--json` wins over `--print` if both are set.
+fn stdout_payload(
+    item: &brave_vault_core::agent::protocol::RevealedItem,
+    print: bool,
+    json: bool,
+) -> Result<Option<String>> {
+    if json {
+        return Ok(Some(serde_json::to_string(item)?));
+    }
+    if print {
+        let mut lines = Vec::new();
+        if !item.username.is_empty() {
+            lines.push(item.username.clone());
+        }
+        if !item.password.is_empty() {
+            lines.push(item.password.clone());
+        }
+        if !item.notes.is_empty() {
+            lines.push(item.notes.clone());
+        }
+        for (k, v) in &item.fields {
+            lines.push(format!("{k}: {v}"));
+        }
+        return Ok(Some(lines.join("\n")));
+    }
+    Ok(None)
+}
+
 /// Route the revealed secret away from logs by default. `--print` opts into
-/// stdout for interactive/manual use.
+/// stdout for interactive use; `--json` emits the whole item as one JSON object
+/// on stdout for programmatic consumers (e.g. an agent driving a login).
 fn deliver_secret(
     item: &brave_vault_core::agent::protocol::RevealedItem,
     print: bool,
+    json: bool,
 ) -> Result<()> {
-    if print {
-        // Explicit opt-in: emit the value(s) on stdout.
-        if !item.password.is_empty() {
-            println!("{}", item.password);
-        }
-        if !item.notes.is_empty() {
-            println!("{}", item.notes);
-        }
-        for (k, v) in &item.fields {
-            println!("{k}: {v}");
-        }
+    if let Some(out) = stdout_payload(item, print, json)? {
+        println!("{out}");
         return Ok(());
     }
     // Default: copy the primary secret to the clipboard, print only metadata.
@@ -327,5 +351,58 @@ fn cmd_list_grants() -> Result<()> {
         }
         Response::Error { message } => bail!(message),
         other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brave_vault_core::agent::protocol::RevealedItem;
+
+    fn login() -> RevealedItem {
+        RevealedItem {
+            id: "pw:https://example.com/|alice".into(),
+            kind: "password".into(),
+            title: "example.com".into(),
+            username: "alice".into(),
+            password: "s3cret".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_uses_clipboard_path() {
+        assert!(stdout_payload(&login(), false, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn json_emits_username_and_password() {
+        let out = stdout_payload(&login(), false, true).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["username"], "alice");
+        assert_eq!(v["password"], "s3cret");
+    }
+
+    #[test]
+    fn print_leads_with_username_then_password() {
+        let out = stdout_payload(&login(), true, false).unwrap().unwrap();
+        assert_eq!(out, "alice\ns3cret");
+    }
+
+    #[test]
+    fn json_wins_over_print() {
+        let out = stdout_payload(&login(), true, true).unwrap().unwrap();
+        assert!(out.starts_with('{'));
+    }
+
+    #[test]
+    fn print_includes_identity_fields() {
+        let item = RevealedItem {
+            kind: "identity".into(),
+            fields: vec![("Email".into(), "a@b.com".into())],
+            ..Default::default()
+        };
+        let out = stdout_payload(&item, true, false).unwrap().unwrap();
+        assert_eq!(out, "Email: a@b.com");
     }
 }
