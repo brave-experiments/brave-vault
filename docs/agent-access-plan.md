@@ -264,11 +264,15 @@ Phases 1–6 are implemented in this repo:
   grants, view live grants, and read the audit log; plus a global approval popup
   wired to the `agent://approval-request` event.
 
+Phase 9 (session grab) is also implemented: `Action::Session`, origin-scoped
+grants, the `grab-session` CLI, the `GrabJob`/`SessionResult` protocol, and the
+extension's `optional_host_permissions` + `chrome.cookies.getAll` path.
+
 Remaining: Phase 0 sign-off, Phase 7 hardening (rate limits, peer-cred checks,
 global kill-switch), running the app/browser under a separate OS user for true
 isolation, and the optional Phase 8 MCP wrapper. The browser end (extension
-`connectNative`, content-script fill) is verified by manual QA only — it cannot
-be automated headlessly.
+`connectNative`, form fill, cookie grab) is verified by manual QA only — it
+cannot be automated headlessly.
 
 ## Phased plan
 
@@ -355,6 +359,27 @@ deliver value even if later phases slip.
   `request`/`reveal`/`use` as tools with the same broker guarantees.
 - **Exit:** a Claude/other agent uses the vault through the broker with no raw
   secret in its context.
+
+### Phase 9 — Session grab (reuse a logged-in browser session)
+- Motivation: 2FA sites can't be re-logged-in by an agent. Instead, grab the
+  **live session cookies** for an approved origin set from a logged-in browser
+  and let the agent replay them. Implemented as a third action, `Action::Session`.
+- A `session` request targets a comma-separated **host set** (not a vault item),
+  so it bypasses `resolve` and always prompts. On approval the broker mints an
+  origin-scoped grant (`scope = ["origin:<host>", ...]`).
+- `grab-session` dispatches a `GrabJob` to the injector; the extension grabs the
+  cookies and returns them (`SessionResult`), which the broker returns to the
+  agent (`Response::Session`). Cookies are **not** stored — a one-shot live grab.
+- **Browser-enforced scope is the guarantee:** the extension holds no standing
+  cookie/host access; it requests `optional_host_permissions` for exactly the
+  approved hosts at grab time, and Brave prompts + refuses all others (e.g. a
+  bank) at the sandbox level.
+- **Bearer-token caveat:** a grabbed session is full-account access until it
+  expires; origin-scoping controls *which* session the agent gets, not what it
+  does with it. Short TTL + single-use + revoke bound the exposure. For an API-
+  backed service (e.g. Gmail), a scoped OAuth token is preferable to cookie grab.
+- **Exit:** agent authorizes and reuses a logged-in session for an approved host
+  set, and cannot read cookies for any other origin.
 
 ---
 

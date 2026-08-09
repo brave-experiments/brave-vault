@@ -82,4 +82,26 @@ Same-user caveat: no software boundary fully stops a same-user attacker. `use`
 raises the bar (the secret goes to the browser-spawned host, not the agent), but
 true isolation requires running the app/browser under a separate OS user.
 
+### session (grab a logged-in browser session)
+
+For sites that use 2FA (or where you're already logged in), the agent can grab
+the **live session cookies** for an approved set of hosts and replay them in its
+own automation browser — no password, no re-login:
+
+```sh
+brave-vault-agent request --action session --item "mail.google.com,accounts.google.com"
+brave-vault-agent grab-session --grant <id>     # prints the cookies as JSON
+```
+
+- You approve the exact **host set** at the popup (a multi-domain login like
+  Google needs its several hosts). The grab covers only those hosts.
+- **Browser-enforced scope:** the extension holds no standing cookie access; it
+  requests permission for exactly the approved hosts at grab time, and Brave
+  prompts and refuses every other origin — so authorizing Google can never touch
+  your bank.
+- **Bearer-token caveat:** grabbed cookies are a full-account session until they
+  expire. The grant is short-lived and single-use; revoke from the Agents panel.
+  Origin-scoping controls *which* session the agent gets, not what it does with
+  it once it has it.
+
 See `docs/agent-access-plan.md` for the design.
